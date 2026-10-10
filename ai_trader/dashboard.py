@@ -13,6 +13,7 @@ from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
+import anthropic
 import ccxt
 
 from ai_trader.bot import build_bot
@@ -45,6 +46,31 @@ def update_env_file(path: Path, values: dict[str, str]):
         lines += [f"{k}={v}" for k, v in remaining.items()]
     path.write_text("\n".join(lines) + "\n")
     os.environ.update(values)
+
+
+def clean_api_key(raw: str) -> str:
+    """Strip the spaces, quotes and 'ANTHROPIC_API_KEY=' people often copy along with a key."""
+    key = raw.strip().strip('"').strip("'").strip()
+    if "=" in key and key.split("=", 1)[0].strip().upper().endswith("KEY"):
+        key = key.split("=", 1)[1].strip().strip('"').strip("'")
+    return "".join(key.split())
+
+
+def check_api_key(key: str) -> str | None:
+    """Return a plain-English problem with the key, or None if Claude accepts it."""
+    if key.startswith(("sk-proj-", "sk-svcacct-")) or (key.startswith("sk-") and not key.startswith("sk-ant-")):
+        return ("That's an OpenAI (ChatGPT) key, not a Claude key. Get a Claude key at "
+                "platform.claude.com > Settings > API keys. It starts with sk-ant-")
+    if key.startswith("sk-ant-admin"):
+        return "That's an Admin key. Create a normal API key instead (Settings > API keys > Create key)."
+    try:
+        anthropic.Anthropic(api_key=key, max_retries=1, timeout=20).models.list(limit=1)
+    except anthropic.AuthenticationError:
+        return ("Claude rejected that key. Copy it again from platform.claude.com > Settings > API keys, "
+                "or create a new one (a key is only shown once, when you create it).")
+    except (anthropic.APIConnectionError, anthropic.APIStatusError):
+        pass  # can't verify right now (offline, outage); save it and let the first run report problems
+    return None
 
 
 class Controller:
@@ -93,10 +119,11 @@ class Controller:
 
     def save_settings(self, body: dict) -> str | None:
         values = {}
-        if body.get("api_key", "").strip():
-            key = body["api_key"].strip()
-            if not key.startswith("sk-ant-"):
-                return "That doesn't look like a Claude API key (it should start with sk-ant-)."
+        key = clean_api_key(body.get("api_key", ""))
+        if key:
+            problem = check_api_key(key)
+            if problem:
+                return problem
             values["ANTHROPIC_API_KEY"] = key
         if body.get("exchange"):
             if body["exchange"] not in ccxt.exchanges:

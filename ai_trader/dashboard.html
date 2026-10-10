@@ -149,7 +149,8 @@ footer { margin-top: 24px; color: var(--muted); font-size: 12px; }
   <section id="setup" class="card setup" hidden>
     <h2>First-time setup</h2>
     <ol>
-      <li>Get a Claude API key at <a href="https://platform.claude.com" target="_blank" rel="noopener">platform.claude.com</a> and add a few dollars of credit.</li>
+      <li>Go to <a href="https://platform.claude.com/settings/keys" target="_blank" rel="noopener">platform.claude.com</a>, sign in, open <b>Settings &gt; API keys</b> and click <b>Create key</b>. Copy it straight away; it's only shown once. It starts with <code>sk-ant-</code>.</li>
+      <li>Add a few dollars under <b>Settings &gt; Billing</b>. A Claude Pro subscription doesn't cover the API; it's billed separately.</li>
       <li>Paste it below. It's saved only in the <code>.env</code> file on this computer.</li>
       <li>You start with fake money (paper trading) at real market prices.</li>
     </ol>
@@ -268,6 +269,7 @@ function buildForm(container, { first }) {
   save.addEventListener("click", async () => {
     err.textContent = "";
     save.disabled = true;
+    if (key.value.trim()) err.textContent = "Checking the key with Claude…";
     try {
       await post("/api/settings", { api_key: key.value, exchange: ex.value, symbols: coins.value, effort: effort.value, starting_cash: cash.value });
       if (!first) $("settings").close();

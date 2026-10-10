@@ -81,3 +81,36 @@ def test_post_requires_token(server):
 def test_foreign_host_rejected(server):
     base, _ = server
     assert _req(base + "/api/state", headers={"Host": "evil.example"})[0] == 403
+
+
+@pytest.mark.parametrize("raw", ['  sk-ant-api03-abc  ', '"sk-ant-api03-abc"', "ANTHROPIC_API_KEY=sk-ant-api03-abc", "sk-ant-api03-\nabc"])
+def test_clean_api_key(raw):
+    assert dashboard.clean_api_key(raw) == "sk-ant-api03-abc"
+
+
+def test_check_api_key_spots_openai_key():
+    assert "OpenAI" in dashboard.check_api_key("sk-proj-123")
+    assert "OpenAI" in dashboard.check_api_key("sk-123")
+
+
+def test_check_api_key_rejected_and_offline(monkeypatch):
+    import anthropic
+
+    class Models:
+        def __init__(self, exc):
+            self.exc = exc
+
+        def list(self, **kw):
+            if self.exc:
+                raise self.exc
+
+    def fake_client(exc):
+        return lambda **kw: type("C", (), {"models": Models(exc)})()
+
+    resp = type("R", (), {"status_code": 401, "headers": {}, "request": None})()
+    monkeypatch.setattr(anthropic, "Anthropic", fake_client(anthropic.AuthenticationError("bad", response=resp, body=None)))
+    assert "rejected" in dashboard.check_api_key("sk-ant-api03-x")
+    monkeypatch.setattr(anthropic, "Anthropic", fake_client(anthropic.APIConnectionError(request=None)))
+    assert dashboard.check_api_key("sk-ant-api03-x") is None
+    monkeypatch.setattr(anthropic, "Anthropic", fake_client(None))
+    assert dashboard.check_api_key("sk-ant-api03-x") is None
