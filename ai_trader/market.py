@@ -26,6 +26,14 @@ class MarketData:
         return {"price": last, "bid": t.get("bid") or last, "ask": t.get("ask") or last,
                 "change_24h_pct": t.get("percentage"), "volume_24h_quote": t.get("quoteVolume")}
 
+    def daily(self, symbol: str, limit: int) -> list[list[float]]:
+        """Daily candles that have closed (today's still-forming candle is dropped)."""
+        candles = self.exchange.fetch_ohlcv(symbol, "1d", limit=limit + 1)
+        now_ms = self.exchange.milliseconds()
+        if candles and candles[-1][0] + 86_400_000 > now_ms:
+            candles = candles[:-1]
+        return candles[-limit:]
+
     def snapshot(self, symbol: str) -> dict:
         """Everything the AI sees about one coin: price, 24h stats and hourly/daily indicators."""
         hourly = self.exchange.fetch_ohlcv(symbol, "1h", limit=200)

@@ -19,8 +19,11 @@ import ccxt
 
 from ai_trader import backtest
 from ai_trader.bot import build_bot, usage_ledger
-from ai_trader.config import ENV_PATH, Settings
-from ai_trader.usage import EFFORT_OUTPUT_FACTOR, guess_call_cost
+from ai_trader.brain import StrategyCoach
+from ai_trader.config import ENV_PATH, STRATEGY_CHOICES, Settings
+from ai_trader.engine import market_facts
+from ai_trader.strategies import DAILY_HISTORY, MODES, STRATEGIES
+from ai_trader.usage import EFFORT_OUTPUT_FACTOR, guess_call_cost, guess_review_cost
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -28,6 +31,8 @@ PAGE = Path(__file__).with_name("dashboard.html")
 PRICE_REFRESH_SECONDS = 30
 EFFORTS = ("low", "medium", "high", "xhigh", "max")
 BACKTEST_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
+COACH_EVERY_DAYS = 7
+COACH_LOOKBACK_DAYS = 90
 SYMBOL_RE = re.compile(r"[A-Z0-9]+/[A-Z0-9]+")
 
 
@@ -97,6 +102,7 @@ class Controller:
         self.portfolio: dict | None = None
         self.portfolio_at = 0.0
         self.backtest: backtest.BacktestRun | None = None
+        self.coach_busy = False
         self._load()
         prefs = self._prefs()
         if prefs.get("auto_minutes") and not self.settings.is_live and self.bot:
@@ -166,6 +172,22 @@ class Controller:
             if body["effort"] not in EFFORTS:
                 return "Unknown effort level."
             values["TRADER_EFFORT"] = body["effort"]
+        if body.get("strategy"):
+            if body["strategy"] not in STRATEGY_CHOICES:
+                return "Unknown strategy."
+            values["TRADER_STRATEGY"] = body["strategy"]
+        if "review_enabled" in body:
+            values["TRADER_REVIEW"] = "on" if body["review_enabled"] else "off"
+        if body.get("review_model"):
+            if body["review_model"] not in BACKTEST_MODELS:
+                return "Unknown review model."
+            values["TRADER_REVIEW_MODEL"] = body["review_model"]
+        if body.get("review_effort"):
+            if body["review_effort"] not in EFFORTS:
+                return "Unknown effort level."
+            values["TRADER_REVIEW_EFFORT"] = body["review_effort"]
+        if "follow_unreviewed" in body:
+            values["TRADER_IF_NO_REVIEW"] = "follow" if body["follow_unreviewed"] else "skip"
         if not values:
             return None
         if self.busy:
@@ -221,6 +243,8 @@ class Controller:
             if self.auto_minutes and self.next_run and time.time() >= self.next_run and self.bot and not self.busy:
                 self.next_run = time.time() + self.auto_minutes * 60
                 self._cycle()
+                if self.settings.strategy != "claude" and not self.coach_busy and self._coach_due():
+                    self.run_coach()
 
     def _price_loop(self):
         while True:
@@ -268,7 +292,10 @@ class Controller:
             return "The end date has to be after the start date."
         if end > datetime.now(timezone.utc).date() + timedelta(days=1):
             return "The end date can't be in the future."
-        step = int(body.get("step_hours") or 0)
+        strategy = body.get("strategy", "compare")
+        if strategy not in ("compare",) + STRATEGY_CHOICES:
+            return "Pick a strategy."
+        step = 24 if strategy != "claude" else int(body.get("step_hours") or 0)
         if step not in (1, 2, 4, 6, 12, 24):
             return "Pick how often Claude decides."
         if body.get("model") not in BACKTEST_MODELS or body.get("effort") not in EFFORTS:
@@ -276,12 +303,14 @@ class Controller:
         cash, limit = _positive(body.get("starting_cash")), _positive(body.get("max_spend_usd"))
         if cash is None or limit is None:
             return "Starting money and spending limit must be positive numbers."
-        problem = self.ledger.budget_problem(self.settings.budget, self.ledger.typical_call(body["model"], body["effort"]))
+        uses_claude = strategy == "claude" or (body.get("review") and strategy != "compare")
+        problem = uses_claude and self.ledger.budget_problem(self.settings.budget, self.ledger.typical_call(body["model"], body["effort"]))
         if problem:
             return f"Can't start: {problem}. You can raise the caps in Settings."
         cfg = backtest.BacktestConfig(exchange=body["exchange"], symbols=symbols, start=start.isoformat(),
                                       end=end.isoformat(), step_hours=step, model=body["model"],
-                                      effort=body["effort"], starting_cash=cash, max_spend_usd=limit)
+                                      effort=body["effort"], starting_cash=cash, max_spend_usd=limit,
+                                      strategy=strategy, review=bool(body.get("review")) and strategy not in ("compare", "claude"))
         self.backtest = backtest.BacktestRun(cfg, self.settings, self.ledger,
                                              backtest.new_run_dir(self._backtest_root()))
         self.backtest.start()
@@ -308,10 +337,12 @@ class Controller:
         if live and live.state in ("starting", "loading", "running"):  # fresh numbers mid-run
             summary.update(backtest.results(journal_cycles, summary["config"]["symbols"][0]),
                            state=live.state, message=live.message, claude_cost=live.status()["spent"])
+        curves_path = run_dir / "curves.json"
         return {
             "summary": summary,
+            "curves": json.loads(curves_path.read_text()) if curves_path.exists() else None,
             "history": equity_history(journal_cycles, summary["config"]["symbols"][0]),
-            "cycles": [{k: c.get(k) for k in ("time", "market_view", "decisions", "rejected", "fills", "errors")}
+            "cycles": [{k: c.get(k) for k in ("time", "market_view", "decisions", "reviews", "rejected", "fills", "errors")}
                        for c in reversed(journal_cycles[-200:])],
             "trades": read_trades(run_dir / "trades.csv", 500),
         }
@@ -331,6 +362,68 @@ class Controller:
                     out[model][effort] = guess_call_cost(model, effort)
         return out
 
+    def _review_estimates(self) -> dict:
+        return {m: {e: guess_review_cost(m, e) for e in EFFORTS} for m in BACKTEST_MODELS}
+
+    # ---- Claude's strategy review ----
+
+    def _coach_path(self) -> Path:
+        return self.settings.data_dir / "strategy_review.json"
+
+    def coach_result(self) -> dict | None:
+        try:
+            return json.loads(self._coach_path().read_text())
+        except (OSError, ValueError):
+            return None
+
+    def run_coach(self) -> str | None:
+        if self.coach_busy:
+            return "Claude is already reviewing the strategies."
+        if not self.bot:
+            return self.setup_error or "Finish setup first."
+        self.coach_busy = True
+        threading.Thread(target=self._coach, daemon=True).start()
+        return None
+
+    def _coach(self):
+        try:
+            s, bot = self.settings, self.bot
+            daily = {sym: bot.market.daily(sym, DAILY_HISTORY + COACH_LOOKBACK_DAYS) for sym in s.symbols}
+            end = max(c[0] for cs in daily.values() for c in cs) + backtest.DAY_MS
+            start = end - COACH_LOOKBACK_DAYS * backtest.DAY_MS
+            cash = 1000.0
+            results = {m: backtest.simulate(m, daily, start, end, cash, s.paper_fee_pct, s.paper_slippage_pct, s.limits)
+                       for m in MODES}
+            bench = s.symbols[0]
+            hold = backtest._hold_curve(daily[bench], [p["time"] for p in results["all"]["points"]], cash)
+            stats = {
+                "period_days": COACH_LOOKBACK_DAYS,
+                "currently_running": s.strategy,
+                "strategies": {m: {"name": MODES[m][0], **backtest.curve_stats(r["points"], r["fills"], cash)}
+                               for m, r in results.items()},
+                f"buy_and_hold_{bench.split('/')[0]}_return_pct": round((hold[-1]["equity"] / cash - 1) * 100, 2) if hold else None,
+                "market_now": {sym: market_facts(cs) for sym, cs in daily.items()},
+                "rules": {k: st.rules for k, st in STRATEGIES.items()},
+            }
+            coach = StrategyCoach(s.review_model, "medium", ledger=self.ledger, budget=s.budget, source="review")
+            result = coach.assess(stats, list(MODES))
+            out = {"time": datetime.now(timezone.utc).isoformat(timespec="seconds"), "stats": stats, **result}
+            if result.get("error"):
+                out["summary"] = f"Couldn't get Claude's review: {result['error']}. The 90-day numbers below are still up to date."
+            self._coach_path().parent.mkdir(parents=True, exist_ok=True)
+            self._coach_path().write_text(json.dumps(out, indent=1))
+        except Exception as e:
+            self.last_error = f"Strategy review failed: {e}"
+        finally:
+            self.coach_busy = False
+
+    def _coach_due(self) -> bool:
+        last = self.coach_result()
+        if not last:
+            return True
+        age = datetime.now(timezone.utc) - datetime.fromisoformat(last["time"])
+        return age > timedelta(days=COACH_EVERY_DAYS)
+
     # ---- view ----
 
     def state(self) -> dict:
@@ -343,6 +436,12 @@ class Controller:
             "next_run_in": max(0, round(self.next_run - time.time())) if self.next_run else None,
             "last_error": self.last_error, "limits": asdict(s.limits), "data_dir": str(s.data_dir / s.mode),
             "portfolio": None, "history": [], "cycles": [], "trades": [],
+            "strategy": s.strategy,
+            "strategies": {k: {"name": st.name, "rules": st.rules} for k, st in STRATEGIES.items()},
+            "modes": {k: {"name": name, "uses": keys} for k, (name, keys) in MODES.items()},
+            "review": {"enabled": s.review_enabled, "model": s.review_model, "effort": s.review_effort,
+                       "follow_unreviewed": s.follow_unreviewed, "per_call": guess_review_cost(s.review_model, s.review_effort)},
+            "coach": self.coach_result(), "coach_busy": self.coach_busy,
             "usage": {**self.ledger.summary(), "daily_cap": s.budget.daily_usd, "monthly_cap": s.budget.monthly_usd,
                       "per_call": self.ledger.typical_call(s.model, s.effort)},
             "backtest": {
@@ -350,6 +449,7 @@ class Controller:
                 "runs": backtest.list_runs(self._backtest_root())[:20],
                 "default_dates": backtest.default_dates(7),
                 "estimates": self._cost_estimates(),
+                "review_estimates": self._review_estimates(),
                 "models": BACKTEST_MODELS,
             },
         }
@@ -363,7 +463,8 @@ class Controller:
             }
         cycles = self.bot.journal.cycles(1000)
         out["history"] = equity_history(cycles, s.symbols[0] if s.symbols else None)
-        out["cycles"] = [{k: c.get(k) for k in ("time", "market_view", "decisions", "rejected", "fills", "errors", "halted")}
+        out["cycles"] = [{k: c.get(k) for k in ("time", "market_view", "decisions", "reviews", "signals", "targets",
+                                                "rejected", "fills", "errors", "halted", "strategy")}
                          for c in reversed(cycles[-30:])]
         out["trades"] = read_trades(self.bot.journal.fills_path, 100)
         return out
@@ -447,6 +548,8 @@ def make_handler(controller: Controller, token: str, port: int):
                 err = controller.start_backtest(body)
             elif self.path == "/api/backtest/stop":
                 err = controller.stop_backtest()
+            elif self.path == "/api/coach":
+                err = controller.run_coach()
             else:
                 return self._send(404, {"error": "not found"})
             self._send(400 if err else 200, {"error": err} if err else {"ok": True})

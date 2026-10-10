@@ -4,19 +4,33 @@ Claude reads live crypto market data and decides to buy, sell, or hold each coin
 
 ## How it works
 
-Every cycle (once an hour by default):
+Three rule-based strategies do the trading. Claude reviews them instead of making every call, which cuts Claude costs by roughly 50–100×.
 
-1. **Market data.** It pulls price, 24h stats and hourly and daily candles for each coin from the exchange, and computes RSI, MACD, moving averages, momentum, volatility and volume.
-2. **Stop-losses.** Any coin that has dropped `RISK_STOP_LOSS_PCT` below its entry price is sold automatically, before the AI is asked anything.
-3. **AI decision.** Claude (`claude-opus-5-5`) gets the market data, your portfolio, the risk limits and its own last 12 decisions. It returns buy/sell/hold for each coin, with a size, a confidence score and a reason.
-4. **Risk rules.** The AI can't get around these:
-   - Buys are capped at 10% of equity per trade and 25% per coin, and 20% of equity always stays in cash.
-   - Calls with confidence below 0.6 are ignored.
-   - After a 5% loss in a day, no new buys are made until tomorrow. Sells still go through.
-   - It trades spot only, with no leverage and no shorting.
-5. **Execute and log.** Orders go to the paper broker or the real exchange. Every cycle is written to `cycles.jsonl` and every fill to `trades.csv`.
+Every cycle (you pick how often; once an hour is plenty):
 
-If anything goes wrong (the exchange is down, the API errors, or the reply can't be parsed), it holds everything for that cycle.
+1. **Prices.** It reads ~400 days of daily candles plus the live price for each coin.
+2. **Stop-losses.** Any coin `RISK_STOP_LOSS_PCT` (default 15%) below its entry is sold first. It isn't bought back until its strategy gives a fresh signal.
+3. **Strategy signals.** Each strategy says whether to hold each coin and how much (details below). Each coin gets an equal slot of the account.
+4. **Claude review, new entries only.** A brand-new entry goes to Claude once, in one small request covering every new signal that cycle. Claude can approve it, halve it, or veto it, and its verdict is remembered, so the same signal is never paid for twice. Exits and trims never wait for Claude.
+5. **Rebalance with safety rules.** At most 40% of the account per coin and at least 10% kept in cash. Small differences are ignored so fees don't eat the account. After a 5% losing day, no new buys until tomorrow.
+6. **Log.** Every cycle goes to `cycles.jsonl` and every fill to `trades.csv`.
+
+Once a week while auto-trading, or when you click **Review now**, Claude also looks at how all three strategies did over the last 90 days (worked out for free) and suggests which to run. That's one request, a few cents.
+
+If Claude is unreachable or a spending cap is reached, the strategy keeps trading by default. You can switch that to "skip the trade" in Settings.
+
+### The three strategies
+
+| Strategy | Rules | Why it's here |
+|---|---|---|
+| **Trend following** | Buy when the daily close is above the 50-day average and the coin is up over 30 days. Sell when it closes below the 50-day average. | Time-series momentum has the most consistent evidence among simple crypto rules ([Han, Kang & Ryu](https://www.journals.vu.lt/BATP/article/view/44540); [QuantPedia summary](https://quantpedia.com/trend-following-and-mean-reversion-in-bitcoin/)). Much of the edge disappears once fees are counted. |
+| **Breakout ensemble** | Seven Donchian channels (20–360 days). Each one buys a new N-day closing high and sells below its ratcheting mid-line. The position is the share of channels that are in. | Based on Zarattini, Pagani & Barbon, ["Catching Crypto Trends"](https://papers.ssrn.com/sol3/papers.cfm?abstract_id=5209907) (2025), which reports a net-of-fee Sharpe above 1.5 on a top-20 coin portfolio. This is a simpler, lower-turnover version: the 5- and 10-day channels are dropped. |
+| **Dip buyer** | Only in an uptrend (above the 200-day average). Buy when the 2-day RSI drops below 10. Sell on a bounce above the 5-day average, after 10 days, or if the uptrend breaks. | Connors-style RSI-2. The evidence on daily crypto data is weak and mixed ([Corbet & Katsiampa](https://shura.shu.ac.uk/23470/)). It's included because it trades when the trend strategies are waiting, which smooths the combined result. |
+| **All three combined** (default) | Each strategy runs on a third of the account. | Spreading across different styles usually gives a smoother ride than any one of them. |
+
+All three size positions by volatility, aiming each coin at about 40% annual volatility, so a wild coin gets a smaller position than a calm one. The old mode, where Claude makes every decision, is still available in Settings as "Claude decides everything". It costs about 50× more.
+
+**Honest expectations:** trend-following rules tend to lag buy-and-hold in strong bull runs and earn their keep by stepping aside in crashes. Backtest several periods (a bull run, a crash, a sideways year) before trusting any of them.
 
 ## Start it (Windows)
 
@@ -38,22 +52,19 @@ The `.py` launcher is used instead of `.bat` files because Windows Smart App Con
 - **Value over time:** the bot's portfolio next to what holding BTC from day one would be worth. Hover for exact numbers.
 - **Latest AI decision:** Claude's read of the market and its call on each coin, with its reasoning, plus anything the safety rules blocked.
 - **Holdings, trades and earlier decisions.**
-- **Settings:** change the exchange, coins, how hard Claude thinks, or reset the paper account.
+- **Strategy:** each coin's status in every strategy (in or out, since when, and why), and the target holding.
+- **Claude's strategy review:** the weekly 90-day comparison and Claude's suggestion, with a one-click switch.
+- **Settings:** strategy, Claude review on or off, review model and effort, spending caps, exchange, coins, or reset the paper account.
 
 ### Backtesting
 
-The **Backtest** tab replays real past prices and lets Claude trade them with fake money. You can see how it would have done before trusting it with anything.
+The **Backtest** tab replays real past prices with fake money.
 
-1. Pick the coins, a date range, how often Claude decides, and which model to use.
-2. Check the estimate under the form. It shows how many Claude calls the backtest needs and roughly what they'll cost.
-3. Set a **spending limit for this backtest**. It stops before going over it.
-4. Click **Start backtest**. You get the return, how it compares with just holding BTC, the worst drop, trades and fees, and every decision Claude made.
+- **Compare all three (free, the default):** runs Trend, Breakout, Dip and the combination side by side against just holding, over any period you pick. It takes seconds and costs nothing. Run it on several periods.
+- **One strategy with Claude review:** the same, but Claude reviews each new entry. Costs about a cent per review; a year on three coins is usually a few dollars. Set a spending limit; past it, the backtest continues on the rules alone.
+- **Claude decides everything (old mode):** one Claude call per step. Expensive; keep it to short periods.
 
-Things to know:
-- At each step Claude only sees prices up to that moment, never what came next.
-- **Claude may still remember roughly what crypto prices did from its training**, so backtests can look better than real trading. A good backtest means "worth paper trading", not "proven".
-- **Kraken only keeps about 30 days of hourly prices.** For longer backtests pick **Binance** and coins like `BTC/USDT`.
-- A backtest makes one Claude call per step. A month of decisions every hour on Opus is about 720 calls, roughly $50. Decide less often (every 6 hours or once a day) to keep it cheap. Sonnet 5.5 costs about half as much as Opus, and Haiku 5.5 about 1/30th. A cheaper model doesn't test the exact setup you trade with, though.
+At each step the strategy (and Claude) only sees prices up to that moment. The strategies need about a year of history to warm up their longest channels. **Kraken keeps about 2 years of daily prices**, so for longer backtests pick **Binance** with coins like `BTC/USDT`.
 
 ### Claude credit tracking and caps
 
@@ -81,11 +92,16 @@ All settings go in `.env`. `.env.example` lists every option. The main ones:
 | `TRADER_SYMBOLS` | `BTC/USD,ETH/USD,SOL/USD` | Coins to trade. Use the exchange's pair names (Binance uses `BTC/USDT`) |
 | `TRADER_EFFORT` | `high` | How hard Claude thinks: `low` / `medium` / `high` / `xhigh` / `max` |
 | `PAPER_STARTING_CASH` | `10000` | Fake money for paper mode |
+| `TRADER_STRATEGY` | `all` | `all`, `trend`, `breakout`, `dip`, or `claude` (Claude decides everything) |
+| `TRADER_REVIEW` | `on` | Claude reviews new entries (`on`/`off`) |
+| `TRADER_REVIEW_MODEL` | `claude-opus-5-5` | Model for reviews and the weekly report (`claude-sonnet-5-5`, `claude-haiku-5-5` are cheaper) |
+| `TRADER_REVIEW_EFFORT` | `low` | Effort for reviews |
+| `TRADER_IF_NO_REVIEW` | `follow` | If Claude can't review: `follow` the strategy or `skip` the trade |
 | `CLAUDE_DAILY_BUDGET_USD` | `5` | Max Claude spend per day, trading + backtests (0 = no cap) |
 | `CLAUDE_MONTHLY_BUDGET_USD` | `40` | Max Claude spend per month (0 = no cap) |
 | `RISK_*` | see above | The hard limits |
 
-**API cost:** I estimate about $0.05–0.10 per run at `high` effort, which comes to roughly $1–2 a day if it runs hourly. The dashboard's **Claude spent today** tile shows what it actually costs you. Auto-trade every 4 hours or set effort to `medium` to cut the cost.
+**API cost:** in the strategy modes Claude only runs on new entries (about a cent each with Opus at low effort; a few per coin per month) plus one weekly review, so usually well under a dollar a month. The old "Claude decides everything" mode is about $0.05–0.10 per run, roughly $1–2 a day hourly. The **Claude spent today** tile shows what it actually costs you.
 
 ## Going live (real money)
 

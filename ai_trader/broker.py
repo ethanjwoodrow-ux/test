@@ -26,15 +26,19 @@ class Fill:
 
 
 class _StateFile:
-    def __init__(self, path: Path, default: dict):
+    """JSON state on disk, or kept only in memory when path is None (fast backtests)."""
+
+    def __init__(self, path: Path | None, default: dict):
         self.path = path
-        if path.exists():
+        if path and path.exists():
             self.data = json.loads(path.read_text())
         else:
             self.data = default
             self.save()
 
     def save(self):
+        if self.path is None:
+            return
         self.path.parent.mkdir(parents=True, exist_ok=True)
         tmp = self.path.with_suffix(".tmp")
         tmp.write_text(json.dumps(self.data, indent=2))
@@ -46,7 +50,7 @@ class PaperBroker:
 
     is_live = False
 
-    def __init__(self, state_path: Path, starting_cash: float, fee_pct: float, slippage_pct: float):
+    def __init__(self, state_path: Path | None, starting_cash: float, fee_pct: float, slippage_pct: float):
         self.fee = fee_pct / 100
         self.slippage = slippage_pct / 100
         self.state = _StateFile(state_path, {"cash": starting_cash, "starting_cash": starting_cash,

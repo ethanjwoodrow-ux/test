@@ -88,3 +88,50 @@ def vet(decisions: list[dict], portfolio: dict, limits: RiskLimits, halted: bool
         else:
             reject(d, f"unknown action {action!r}")
     return orders, rejected
+
+
+def rebalance(targets: dict[str, float], portfolio: dict, limits: RiskLimits, halted: bool,
+              band_pct: float = 5.0) -> tuple[list[Order], list[dict]]:
+    """Orders that move holdings toward target weights (share of equity per coin).
+
+    Small differences (under band_pct of equity or the minimum order) are left alone so the bot
+    doesn't pay fees to nudge positions back and forth."""
+    equity, cash = portfolio["equity"], portfolio["cash"]
+    orders, notes = [], []
+    band = max(limits.min_order_usd, equity * band_pct / 100)
+    wants = {}
+    for symbol in set(targets) | set(portfolio["positions"]):
+        if symbol not in portfolio["prices"]:
+            continue
+        weight = min(max(targets.get(symbol, 0.0), 0.0), limits.max_position_pct / 100)
+        held = portfolio["positions"].get(symbol, {}).get("value", 0.0)
+        wants[symbol] = (weight * equity, held)
+
+    for symbol, (target, held) in sorted(wants.items()):  # sells first, to free up cash
+        if target >= held:
+            continue
+        price = portfolio["prices"][symbol]
+        amount_held = portfolio["positions"][symbol]["amount"]
+        if target <= 0:
+            if held >= limits.min_order_usd:
+                orders.append(Order(symbol, "sell", amount=amount_held, reason="strategy exit"))
+                cash += held
+            continue
+        if held - target >= band:
+            orders.append(Order(symbol, "sell", amount=(held - target) / price, reason="trim to target"))
+            cash += held - target
+
+    reserve = equity * limits.min_cash_pct / 100
+    for symbol, (target, held) in sorted(wants.items()):
+        if target <= held or target - held < band:
+            continue
+        if halted:
+            notes.append({"symbol": symbol, "action": "buy", "why": "daily loss limit hit; no new buys today"})
+            continue
+        spend = min(target - held, cash - reserve)
+        if spend < limits.min_order_usd:
+            notes.append({"symbol": symbol, "action": "buy", "why": "not enough cash above the reserve"})
+            continue
+        orders.append(Order(symbol, "buy", spend=spend, reason="new position" if held < limits.min_order_usd else "add to target"))
+        cash -= spend
+    return orders, notes

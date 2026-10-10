@@ -1,5 +1,6 @@
 """Backtest tests with a fake exchange (synthetic candles) and a fake Claude."""
 
+import json
 import math
 import time
 from datetime import datetime, timezone
@@ -121,3 +122,27 @@ def test_backtest_moves_start_when_exchange_history_is_short(tmp_path):
 
 def test_max_drawdown():
     assert max_drawdown_pct([100, 120, 90, 130]) == pytest.approx(-25)
+
+
+def test_compare_backtest_is_free_and_covers_all_modes(tmp_path):
+    cfg = config(strategy="compare", start="2026-02-01", end="2026-03-03", step_hours=24)
+    run, ledger = run_backtest(tmp_path, cfg)
+    s = run.summary
+    assert run.state == "done", run.message
+    assert set(s["strategies"]) == {"trend", "breakout", "dip", "all"}
+    assert s["claude_cost"] == 0 and ledger.entries() == []
+    curves = json.loads((run.dir / "curves.json").read_text())
+    assert set(curves) == {"trend", "breakout", "dip", "all", "hold"}
+    assert len(curves["hold"]) == len(curves["all"]) > 0
+
+
+def test_strategy_backtest_with_review_respects_limit(tmp_path):
+    from types import SimpleNamespace
+
+    settings = Settings.from_env()
+    ledger = UsageLedger(tmp_path / "usage.jsonl")
+    cfg = config(strategy="trend", review=True, start="2026-02-01", end="2026-03-03", max_spend_usd=0.0)
+    run = BacktestRun(cfg, settings, ledger, tmp_path / "bt" / "run2", exchange=FakeExchange())
+    run._run_safely()
+    assert run.state == "done", run.message
+    assert ledger.entries() == []  # $0 limit: Claude never called, rules still traded

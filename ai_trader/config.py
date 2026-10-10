@@ -13,6 +13,7 @@ load_dotenv(ENV_PATH)
 
 # Must be set exactly to this in .env before the bot will place real orders.
 LIVE_CONFIRM_PHRASE = "I_UNDERSTAND_THE_RISKS"
+STRATEGY_CHOICES = ("all", "trend", "breakout", "dip", "claude")
 
 
 def _float(name: str, default: str) -> float:
@@ -21,12 +22,12 @@ def _float(name: str, default: str) -> float:
 
 @dataclass
 class RiskLimits:
-    max_position_pct: float = 25.0    # no single coin above this % of total equity
+    max_position_pct: float = 40.0    # no single coin above this % of total equity
     max_trade_pct: float = 10.0       # no single buy above this % of total equity
-    min_cash_pct: float = 20.0        # always keep this % of equity in cash
-    min_confidence: float = 0.6       # ignore AI calls below this confidence (0-1)
+    min_cash_pct: float = 10.0        # always keep this % of equity in cash
+    min_confidence: float = 0.6       # "Claude decides" mode: ignore calls below this confidence (0-1)
     max_daily_loss_pct: float = 5.0   # stop opening new positions after this daily drop
-    stop_loss_pct: float = 8.0        # auto-sell a coin this far below its entry price
+    stop_loss_pct: float = 15.0       # auto-sell a coin this far below its entry price (strategies have their own exits too)
     min_order_usd: float = 10.0       # skip orders smaller than this
 
 
@@ -38,6 +39,11 @@ class Settings:
     quote_currency: str
     model: str
     effort: str
+    strategy: str              # "trend", "breakout", "dip", "all", or "claude" (Claude decides everything)
+    review_enabled: bool       # strategy modes: ask Claude to review new entries
+    review_model: str
+    review_effort: str
+    follow_unreviewed: bool    # if Claude can't review (budget, outage): True = trade anyway, False = skip entry
     data_dir: Path
     starting_cash: float
     paper_fee_pct: float
@@ -59,6 +65,9 @@ class Settings:
         mode = os.getenv("TRADER_MODE", "paper").strip().lower()
         if mode not in ("paper", "live"):
             raise ValueError(f"TRADER_MODE must be 'paper' or 'live', got {mode!r}")
+        strategy = os.getenv("TRADER_STRATEGY", "all").strip().lower()
+        if strategy not in STRATEGY_CHOICES:
+            raise ValueError(f"TRADER_STRATEGY must be one of {', '.join(STRATEGY_CHOICES)}, got {strategy!r}")
         return cls(
             mode=mode,
             exchange=os.getenv("TRADER_EXCHANGE", "kraken").strip().lower(),
@@ -66,6 +75,11 @@ class Settings:
             quote_currency=symbols[0].split("/")[1] if symbols else "USD",
             model=os.getenv("TRADER_MODEL", "claude-opus-5-5"),
             effort=os.getenv("TRADER_EFFORT", "high"),
+            strategy=strategy,
+            review_enabled=os.getenv("TRADER_REVIEW", "on").strip().lower() != "off",
+            review_model=os.getenv("TRADER_REVIEW_MODEL", "claude-opus-5-5"),
+            review_effort=os.getenv("TRADER_REVIEW_EFFORT", "low"),
+            follow_unreviewed=os.getenv("TRADER_IF_NO_REVIEW", "follow").strip().lower() != "skip",
             data_dir=Path(os.getenv("TRADER_DATA_DIR", str(Path.home() / "ai_trader_data"))),
             starting_cash=_float("PAPER_STARTING_CASH", "10000"),
             paper_fee_pct=_float("PAPER_FEE_PCT", "0.26"),
@@ -75,12 +89,12 @@ class Settings:
             exchange_password=os.getenv("EXCHANGE_API_PASSWORD", ""),
             live_confirmed=os.getenv("LIVE_TRADING_CONFIRMED", "") == LIVE_CONFIRM_PHRASE,
             limits=RiskLimits(
-                max_position_pct=_float("RISK_MAX_POSITION_PCT", "25"),
+                max_position_pct=_float("RISK_MAX_POSITION_PCT", "40"),
                 max_trade_pct=_float("RISK_MAX_TRADE_PCT", "10"),
-                min_cash_pct=_float("RISK_MIN_CASH_PCT", "20"),
+                min_cash_pct=_float("RISK_MIN_CASH_PCT", "10"),
                 min_confidence=_float("RISK_MIN_CONFIDENCE", "0.6"),
                 max_daily_loss_pct=_float("RISK_MAX_DAILY_LOSS_PCT", "5"),
-                stop_loss_pct=_float("RISK_STOP_LOSS_PCT", "8"),
+                stop_loss_pct=_float("RISK_STOP_LOSS_PCT", "15"),
                 min_order_usd=_float("RISK_MIN_ORDER_USD", "10"),
             ),
             budget=Budget(

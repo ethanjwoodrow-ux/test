@@ -30,6 +30,11 @@ def call_cost(model: str, input_tokens: int, output_tokens: int) -> float:
     return (input_tokens * price_in + output_tokens * price_out) / 1_000_000
 
 
+def guess_review_cost(model: str, effort: str) -> float:
+    """A strategy-mode review is small: ~1.2k tokens in, a few hundred out."""
+    return call_cost(model, 1_200, int(800 * EFFORT_OUTPUT_FACTOR.get(effort, 1.0)))
+
+
 def guess_call_cost(model: str, effort: str) -> float:
     tokens_in, tokens_out = TYPICAL_TOKENS
     return call_cost(model, tokens_in, int(tokens_out * EFFORT_OUTPUT_FACTOR.get(effort, 1.0)))

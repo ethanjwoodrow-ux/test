@@ -18,6 +18,8 @@
   --border: rgba(11,11,11,0.10);
   --series-1: #2a78d6;
   --series-2: #eb6834;
+  --series-3: #1baf7a;
+  --series-4: #eda100;
   --good: #006300;
   --bad: #d03b3b;
   --warn-bg: #fff4d6;
@@ -31,7 +33,7 @@
     color-scheme: dark;
     --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
     --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
-    --series-1: #3987e5; --series-2: #d95926; --good: #0ca30c; --bad: #e66767;
+    --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; --good: #0ca30c; --bad: #e66767;
     --warn-bg: #3a2e10; --warn-ink: #f5d58a; --accent: #3987e5;
   }
 }
@@ -39,7 +41,7 @@
   color-scheme: dark;
   --page: #0d0d0d; --surface: #1a1a19; --ink: #f0efec; --ink-2: #c3c2b7; --muted: #898781;
   --grid: #2c2c2a; --axis: #383835; --border: rgba(255,255,255,0.10);
-  --series-1: #3987e5; --series-2: #d95926; --good: #0ca30c; --bad: #e66767;
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500; --good: #0ca30c; --bad: #e66767;
   --warn-bg: #3a2e10; --warn-ink: #f5d58a; --accent: #3987e5;
 }
 * { box-sizing: border-box; }
@@ -98,6 +100,11 @@ tr:last-child td { border-bottom: 0; }
 .legend { display: flex; gap: 16px; font-size: 12px; color: var(--ink-2); margin-bottom: 8px; flex-wrap: wrap; }
 .legend span { display: inline-flex; align-items: center; gap: 6px; }
 .legend i { display: inline-block; width: 16px; height: 2px; border-radius: 1px; }
+.legend i.dashed, .tip .row i.dashed { background: repeating-linear-gradient(90deg, var(--muted) 0 4px, transparent 4px 7px) !important; }
+.state-in { color: var(--good); font-weight: 600; }
+.state-out { color: var(--muted); }
+.coach p { margin: 0 0 10px; }
+.pill { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--ink-2); }
 svg text { fill: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; }
 svg:focus { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
 .tip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,0.12); white-space: nowrap; display: none; }
@@ -196,8 +203,8 @@ tr.pick[aria-selected="true"] td { background: var(--page); font-weight: 600; }
 
     <section class="grid two">
       <div class="card">
-        <h2>Latest AI decision</h2>
-        <div id="latest"></div>
+        <h2 id="strategy-title">Strategy</h2>
+        <div id="strategy"></div>
       </div>
       <div class="card">
         <h2>Holdings</h2>
@@ -207,11 +214,22 @@ tr.pick[aria-selected="true"] td { background: var(--page); font-weight: 600; }
 
     <section class="grid two">
       <div class="card">
+        <h2>Latest run</h2>
+        <div id="latest"></div>
+      </div>
+      <div class="card coach">
+        <h2>Claude's strategy review</h2>
+        <div id="coach"></div>
+      </div>
+    </section>
+
+    <section class="grid two">
+      <div class="card">
         <h2>Trades</h2>
         <div class="scroll" id="trades"></div>
       </div>
       <div class="card">
-        <h2>Earlier decisions</h2>
+        <h2>Earlier runs</h2>
         <div id="history"></div>
       </div>
     </section>
@@ -222,10 +240,10 @@ tr.pick[aria-selected="true"] td { background: var(--page); font-weight: 600; }
   <div id="backtest" hidden>
     <section class="card">
       <h2>New backtest</h2>
-      <p class="caveat" style="margin-top:0">Replays real past prices and lets Claude trade them with fake money, one decision at a time. At each step it only sees prices up to that moment.</p>
+      <p class="caveat" style="margin-top:0">Replays real past prices with fake money. At each step the strategy (and Claude, if reviewing) only sees prices up to that moment. Rule-only backtests are free.</p>
       <div class="bt-grid" id="bt-form"></div>
       <div class="estimate" id="bt-estimate"></div>
-      <p class="caveat">Heads up: Claude may remember roughly what crypto prices did in the past, so backtests can look better than real trading would. A good result means "worth paper trading", not "proven". Backtests count toward your daily and monthly Claude caps.</p>
+      <p class="caveat">Heads up: any strategy can look good on one stretch of history and fail on the next, so test several periods (a bull run, a crash, a sideways year). When Claude is involved it may also remember roughly what prices did. A good result means "worth paper trading", not "proven". Claude spending in backtests counts toward your caps.</p>
       <div class="err" id="bt-err"></div>
       <div class="actions" style="display:flex;gap:8px"><button class="primary" id="bt-start">Start backtest</button></div>
     </section>
@@ -249,10 +267,11 @@ tr.pick[aria-selected="true"] td { background: var(--page); font-weight: 600; }
       <section class="card">
         <h2 id="bt-chart-title">Backtest result</h2>
         <div id="bt-chart"></div>
+        <div id="bt-extra"></div>
       </section>
       <section class="grid two">
-        <div class="card"><h2>Trades</h2><div class="scroll" id="bt-trades"></div></div>
-        <div class="card"><h2>Claude's decisions</h2><div id="bt-history"></div></div>
+        <div class="card"><h2 id="bt-trades-title">Trades</h2><div class="scroll" id="bt-trades"></div></div>
+        <div class="card"><h2>Trading days</h2><div id="bt-history"></div></div>
       </section>
     </div>
   </div>
@@ -321,6 +340,12 @@ function buildForm(container, { first }) {
   ex.addEventListener("change", () => { coins.value = DEFAULT_COINS[ex.value] || "BTC/USD,ETH/USD,SOL/USD"; });
   const effort = el("select", {}, ["low", "medium", "high", "xhigh", "max"].map(v => el("option", { value: v, selected: v === state.effort }, v)));
   const cash = el("input", { type: "number", min: "1", step: "100", value: state.starting_cash });
+  const STRATEGY_LABELS = { all: "All three combined (recommended)", trend: "Trend following", breakout: "Breakout ensemble", dip: "Dip buyer", claude: "Claude decides everything (old mode, ~50× the cost)" };
+  const strategy = el("select", {}, Object.entries(STRATEGY_LABELS).map(([v, n]) => el("option", { value: v, selected: v === state.strategy }, n)));
+  const review = el("select", {}, [["on", "On: Claude checks each new entry once"], ["off", "Off: strategy trades on its own (free)"]].map(([v, n]) => el("option", { value: v, selected: (v === "on") === state.review.enabled }, n)));
+  const reviewModel = el("select", {}, ["claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5"].map(m => el("option", { value: m, selected: m === state.review.model }, { "claude-opus-5-5": "Opus 5.5", "claude-sonnet-5-5": "Sonnet 5.5", "claude-haiku-5-5": "Haiku 5.5" }[m])));
+  const reviewEffort = el("select", {}, ["low", "medium", "high"].map(v => el("option", { value: v, selected: v === state.review.effort }, v)));
+  const follow = el("select", {}, [["follow", "Follow the strategy anyway"], ["skip", "Skip the trade"]].map(([v, n]) => el("option", { value: v, selected: (v === "follow") === state.review.follow_unreviewed }, n)));
   const daily = el("input", { type: "number", min: "0", step: "0.5", value: state.usage.daily_cap });
   const monthly = el("input", { type: "number", min: "0", step: "1", value: state.usage.monthly_cap });
   const err = el("div", { class: "err" });
@@ -331,7 +356,9 @@ function buildForm(container, { first }) {
     if (key.value.trim()) err.textContent = "Checking the key with Claude…";
     try {
       await post("/api/settings", { api_key: key.value, exchange: ex.value, symbols: coins.value, effort: effort.value, starting_cash: cash.value,
-        ...(first ? {} : { daily_budget: daily.value, monthly_budget: monthly.value }) });
+        ...(first ? {} : { daily_budget: daily.value, monthly_budget: monthly.value, strategy: strategy.value,
+          review_enabled: review.value === "on", review_model: reviewModel.value, review_effort: reviewEffort.value,
+          follow_unreviewed: follow.value === "follow" }) });
       if (!first) $("settings").close();
       await refresh();
     } catch (e) { err.textContent = e.message; }
@@ -339,9 +366,14 @@ function buildForm(container, { first }) {
   });
   container.append(...[
     el("label", {}, "Claude API key", key),
+    first ? null : el("label", {}, "Strategy", strategy, el("span", { class: "hint" }, "Rule-based strategies trade; Claude only reviews. Backtest them for free on the Backtest tab.")),
+    first ? null : el("label", {}, "Claude review of new entries", review),
+    first ? null : el("label", {}, "Review model", reviewModel, el("span", { class: "hint" }, "Opus is the most careful. Sonnet is about half the price, Haiku about 1/30th.")),
+    first ? null : el("label", {}, "Review effort", reviewEffort, el("span", { class: "hint" }, "Low is plenty for a yes/no check and keeps each review to about a cent.")),
+    first ? null : el("label", {}, "If Claude can't review (cap reached, outage)", follow),
     el("label", {}, "Exchange for prices", ex),
     el("label", {}, "Coins to trade", coins, el("span", { class: "hint" }, "Comma-separated pairs as the exchange names them, e.g. BTC/USD")),
-    first ? null : el("label", {}, "How hard Claude thinks", effort, el("span", { class: "hint" }, "Higher = better decisions, more API cost per run")),
+    first ? null : el("label", {}, "How hard Claude thinks (\"Claude decides everything\" mode only)", effort),
     el("label", {}, "Starting fake money", cash, el("span", { class: "hint" }, first ? "" : "Only applies after you reset the paper account")),
     first ? null : el("label", {}, "Claude spending cap per day ($)", daily, el("span", { class: "hint" }, "Covers trading and backtests. Trading pauses until tomorrow when it's reached. 0 = no cap")),
     first ? null : el("label", {}, "Claude spending cap per month ($)", monthly, el("span", { class: "hint" }, "Covers trading and backtests. 0 = no cap")),
@@ -383,14 +415,16 @@ function makeChart(container, ariaLabel) {
     el("details", { style: "margin-top:8px" }, el("summary", {}, "View as table"), table));
   let points = [], index = null, hover = false, lastArgs = null;
 
-  function draw(hist, holdName, emptyText, quote) {
-    lastArgs = [hist, holdName, emptyText, quote];
+  function draw(seriesIn, emptyText, quote) {
+    lastArgs = [seriesIn, emptyText, quote];
     svg.replaceChildren();
     setKids(legend);
-    const series = [
-      { key: "equity", name: "AI bot", color: "var(--series-1)" },
-      { key: "hold", name: holdName, color: "var(--series-2)" },
-    ].filter(s => hist.some(p => p[s.key] !== null && p[s.key] !== undefined));
+    const series = seriesIn.filter(sr => sr.points.length);
+    // One row per time; each series looked up by time so curves of different lengths still line up.
+    const timesSet = [...new Set(series.flatMap(sr => sr.points.map(p => p.time)))].sort();
+    const lookup = series.map(sr => new Map(sr.points.map(p => [p.time, p.value])));
+    const hist = timesSet.map(t => ({ time: t, ...Object.fromEntries(series.map((sr, k) => [k, lookup[k].get(t) ?? null])) }));
+    series.forEach((sr, k) => { sr.key = k; });
     if (hist.length < 2) {
       svg.setAttribute("height", 120);
       svg.append(svgEl("text", { x: "50%", y: 60, "text-anchor": "middle" }, emptyText));
@@ -399,9 +433,10 @@ function makeChart(container, ariaLabel) {
       return;
     }
     svg.setAttribute("height", 280);
-    if (series.length > 1) for (const s of series) legend.append(el("span", {}, el("i", { style: `background:${s.color}` }), s.name));
+    if (series.length > 1) for (const sr of series) legend.append(el("span", {}, el("i", { class: sr.dashed ? "dashed" : "", style: `background:${sr.color}` }), sr.name));
+    const directLabels = series.length <= 4;
 
-    const W = svg.clientWidth || 800, H = 280, m = { l: 64, r: 112, t: 12, b: 28 };
+    const W = svg.clientWidth || 800, H = 280, m = { l: 64, r: directLabels ? 112 : 16, t: 12, b: 28 };
     const times = hist.map(p => new Date(p.time).getTime());
     const vals = hist.flatMap(p => series.map(s => p[s.key])).filter(v => v !== null && v !== undefined);
     let lo = Math.min(...vals), hi = Math.max(...vals);
@@ -429,12 +464,13 @@ function makeChart(container, ariaLabel) {
     const labelYs = [];
     for (const s of series) {
       const pts = hist.map((p, i) => [x(times[i]), p[s.key]]).filter(([, v]) => v !== null && v !== undefined);
-      svg.append(svgEl("path", { d: pts.map(([px, v], i) => (i ? "L" : "M") + px.toFixed(1) + "," + y(v).toFixed(1)).join(""), fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+      svg.append(svgEl("path", { d: pts.map(([px, v], i) => (i ? "L" : "M") + px.toFixed(1) + "," + y(v).toFixed(1)).join(""), fill: "none", stroke: s.color, "stroke-width": 2, "stroke-linejoin": "round", "stroke-linecap": "round", ...(s.dashed ? { "stroke-dasharray": "5 4" } : {}) }));
       const [lx, lv] = pts[pts.length - 1];
+      svg.append(svgEl("circle", { cx: lx, cy: y(lv), r: 4, fill: s.color, stroke: "var(--surface)", "stroke-width": 2 }));
+      if (!directLabels) continue;
       let ly = y(lv);
       for (const other of labelYs) if (Math.abs(other - ly) < 26) ly = other + (ly >= other ? 26 : -26);
       labelYs.push(ly);
-      svg.append(svgEl("circle", { cx: lx, cy: y(lv), r: 4, fill: s.color, stroke: "var(--surface)", "stroke-width": 2 }));
       const label = svgEl("text", { x: lx + 10, y: ly - 2 });
       label.append(svgEl("tspan", { x: lx + 10, style: "fill:var(--ink);font-weight:600" }, money(lv, quote, 0)));
       label.append(svgEl("tspan", { x: lx + 10, dy: 13 }, s.name));
@@ -458,7 +494,7 @@ function makeChart(container, ariaLabel) {
         marks[k].setAttribute("cx", px); marks[k].setAttribute("cy", y(v)); marks[k].setAttribute("visibility", "visible");
       });
       setKids(tip, el("div", { class: "t" }, when(p.time)),
-        series.filter(s => p[s.key] !== null && p[s.key] !== undefined).map(s => el("div", { class: "row" }, el("i", { style: `background:${s.color}` }), el("b", {}, money(p[s.key], quote)), el("span", { class: "meta" }, s.name))));
+        series.filter(s => p[s.key] !== null && p[s.key] !== undefined).map(s => el("div", { class: "row" }, el("i", { class: s.dashed ? "dashed" : "", style: `background:${s.color}` }), el("b", {}, money(p[s.key], quote)), el("span", { class: "meta" }, s.name))));
       tip.style.display = "block";
       const left = Math.min(px + 12, W - tip.offsetWidth - 4);
       tip.style.left = (px + 12 + tip.offsetWidth > W ? px - tip.offsetWidth - 12 : left) + "px";
@@ -483,6 +519,15 @@ function makeChart(container, ariaLabel) {
   return { draw, redraw: () => lastArgs && draw(...lastArgs) };
 }
 
+const HOLD_STYLE = { color: "var(--muted)", dashed: true };
+const MODE_COLORS = { trend: "var(--series-1)", breakout: "var(--series-2)", dip: "var(--series-3)", all: "var(--series-4)" };
+function botVsHold(hist, botName, holdName) {
+  return [
+    { name: botName, color: "var(--series-1)", points: hist.map(p => ({ time: p.time, value: p.equity })) },
+    { name: holdName, ...HOLD_STYLE, points: hist.filter(p => p.hold !== null && p.hold !== undefined).map(p => ({ time: p.time, value: p.hold })) },
+  ];
+}
+
 const tradingChart = makeChart($("chart"), "Portfolio value over time");
 const backtestChart = makeChart($("bt-chart"), "Backtest portfolio value over time");
 
@@ -495,18 +540,21 @@ function moreButton(key, total, shown) {
 }
 
 function decisionsTable(decisions) {
+  const strategyMode = decisions.every(d => d.confidence === null || d.confidence === undefined);
   return el("table", {},
-    el("thead", {}, el("tr", {}, el("th", {}, "Coin"), el("th", {}, "Call"), el("th", { class: "num" }, "Size"), el("th", { class: "num" }, "Conf."), el("th", {}, "Why"))),
+    el("thead", {}, el("tr", {}, el("th", {}, "Coin"), el("th", {}, "Action"), el("th", { class: "num" }, strategyMode ? "Target" : "Size"),
+      strategyMode ? null : el("th", { class: "num" }, "Conf."), el("th", {}, "Why"))),
     el("tbody", {}, decisions.map(d => el("tr", {},
       el("td", {}, coin(d.symbol)),
       el("td", {}, el("span", { class: "chip " + d.action }, d.action)),
-      el("td", { class: "num" }, d.action === "hold" ? "–" : d.size_pct.toFixed(0) + "%"),
-      el("td", { class: "num" }, Math.round(d.confidence * 100) + "%"),
+      el("td", { class: "num" }, strategyMode ? d.size_pct.toFixed(0) + "%" : d.action === "hold" ? "–" : d.size_pct.toFixed(0) + "%"),
+      strategyMode ? null : el("td", { class: "num" }, Math.round(d.confidence * 100) + "%"),
       el("td", {}, d.reasoning)))));
 }
 
 function cycleExtras(c, quote) {
   const out = [];
+  for (const r of c.reviews || []) out.push(el("div", { class: "blocked" }, `Claude reviewed ${coin(r.symbol)} (${r.strategy}): ${r.approve ? (r.size < 1 ? `approved at ${Math.round(r.size * 100)}% size` : "approved") : "vetoed"}. ${r.reason}`));
   for (const f of c.fills || []) out.push(el("div", { class: "blocked" }, `Filled: ${f.side.toUpperCase()} ${coin(f.symbol)} for ${money(f.cost, quote)}` + (String(f.reason).startsWith("stop-loss") ? ` (${f.reason})` : "")));
   for (const r of c.rejected || []) out.push(el("div", { class: "blocked" }, `Blocked by safety rules: ${r.action} ${coin(r.symbol)}: ${r.why}`));
   for (const e of c.errors || []) out.push(el("div", { class: "blocked down" }, e));
@@ -552,12 +600,67 @@ const usd = v => "$" + Number(v).toFixed(v < 1 ? 3 : 2);
 
 function renderLatest() {
   const c = state.cycles[0];
-  if (!c) { setKids($("latest"), el("div", { class: "empty" }, "No decisions yet. Click Run now.")); return; }
+  if (!c) { setKids($("latest"), el("div", { class: "empty" }, "No runs yet. Click Run now.")); return; }
   setKids($("latest"),
     el("div", { class: "meta" }, when(c.time)),
     c.market_view ? el("p", { class: "view" }, c.market_view) : null,
     (c.decisions || []).length ? el("div", { class: "scroll" }, decisionsTable(c.decisions)) : null,
     cycleExtras(c, state.quote));
+}
+
+function renderStrategy() {
+  const s = state, mode = s.strategy;
+  if (mode === "claude") {
+    $("strategy-title").textContent = "Strategy: Claude decides everything";
+    setKids($("strategy"), el("p", { class: "meta" }, "The old mode: Claude reads the market and makes every buy/sell call itself. It costs roughly 50 times more than the rule-based strategies. Switch in Settings."));
+    return;
+  }
+  const info = s.modes[mode];
+  $("strategy-title").textContent = "Strategy: " + info.name;
+  const last = s.cycles.find(c => c.signals);
+  const rules = info.uses.map(k => el("div", { class: "meta", style: "margin-bottom:6px" }, el("b", {}, s.strategies[k].name + ": "), s.strategies[k].rules));
+  const review = s.review.enabled
+    ? `Claude (${MODEL_NAMES[s.review.model] || s.review.model}, ${s.review.effort} effort) reviews each new entry once, about ${usd(s.review.per_call)} each. Exits never wait for Claude.`
+    : "Claude review is off: the strategy trades on its own.";
+  if (!last) { setKids($("strategy"), rules, el("p", { class: "meta" }, review), el("div", { class: "empty" }, "Signals show after the first run.")); return; }
+  const table = el("table", {},
+    el("thead", {}, el("tr", {}, el("th", {}, "Coin"), info.uses.map(k => el("th", {}, s.strategies[k].name)), el("th", { class: "num" }, "Target"))),
+    el("tbody", {}, Object.entries(last.signals).map(([sym, by]) => el("tr", {},
+      el("td", {}, coin(sym)),
+      info.uses.map(k => {
+        const g = by[k];
+        if (!g) return el("td", {}, "–");
+        return el("td", { title: g.reason }, g.weight > 0 ? el("span", { class: "state-in" }, "In") : el("span", { class: "state-out" }, "Out"),
+          g.weight > 0 && g.since ? el("span", { class: "meta" }, ` since ${g.since}`) : null,
+          el("div", { class: "meta" }, g.reason));
+      }),
+      el("td", { class: "num" }, ((last.targets || {})[sym] !== undefined ? Math.round(last.targets[sym] * 100) : 0) + "%")))));
+  setKids($("strategy"), el("div", { class: "scroll" }, table), el("details", { style: "margin-top:10px" }, el("summary", {}, "How it works"), rules, el("p", { class: "meta" }, review)));
+}
+
+function renderCoach() {
+  const s = state, c = s.coach;
+  const btn = el("button", { disabled: s.coach_busy, onclick: async () => { try { await post("/api/coach"); refresh(); } catch (e) { alert(e.message); } } },
+    s.coach_busy ? "Claude is reviewing…" : "Review now");
+  if (s.strategy === "claude") { setKids($("coach"), el("p", { class: "meta" }, "Available in the strategy modes.")); return; }
+  if (!c) {
+    setKids($("coach"), el("p", { class: "meta" }, "Once a week while auto-trading, Claude compares how all three strategies did over the last 90 days and suggests which to run. One small request (a few cents)."), btn);
+    return;
+  }
+  const rows = Object.entries(c.stats.strategies).map(([k, st]) => el("tr", {},
+    el("td", {}, st.name), el("td", { class: "num " + tone(st.return_pct) }, signed(st.return_pct) + "%"),
+    el("td", { class: "num" }, signed(st.max_drawdown_pct) + "%"), el("td", { class: "num" }, st.trades)));
+  const holdKey = Object.keys(c.stats).find(k => k.startsWith("buy_and_hold_"));
+  if (holdKey && c.stats[holdKey] !== null) rows.push(el("tr", {}, el("td", {}, "Just holding " + holdKey.split("_")[3]), el("td", { class: "num " + tone(c.stats[holdKey]) }, signed(c.stats[holdKey]) + "%"), el("td", {}, ""), el("td", {}, "")));
+  const rec = c.recommended_mode && c.recommended_mode !== s.strategy
+    ? el("button", { class: "primary", onclick: async () => { if (!confirm(`Switch to ${s.modes[c.recommended_mode].name}?`)) return; try { await post("/api/settings", { strategy: c.recommended_mode }); refresh(); } catch (e) { alert(e.message); } } }, `Switch to ${s.modes[c.recommended_mode].name}`)
+    : null;
+  setKids($("coach"),
+    el("div", { class: "meta", style: "margin-bottom:8px" }, `${when(c.time)} · last ${c.stats.period_days} days, $1,000 test account`),
+    el("p", {}, c.summary || ""),
+    c.recommended_mode ? el("p", {}, "Suggests: ", el("b", {}, s.modes[c.recommended_mode].name), " ", el("span", { class: "pill" }, `${c.confidence} confidence`)) : null,
+    el("div", { class: "scroll" }, el("table", {}, el("thead", {}, el("tr", {}, el("th", {}, "Last 90 days"), el("th", { class: "num" }, "Return"), el("th", { class: "num" }, "Worst drop"), el("th", { class: "num" }, "Trades"))), el("tbody", {}, rows))),
+    el("div", { style: "display:flex;gap:8px;margin-top:10px;flex-wrap:wrap" }, rec, btn));
 }
 
 function renderPositions() {
@@ -580,7 +683,7 @@ function renderSpending() {
   $("t-claude").textContent = usd(u.today);
   const parts = [u.daily_cap ? `of ${usd(u.daily_cap)} daily cap` : "no daily cap",
                  `${usd(u.month)} this month` + (u.monthly_cap ? ` of ${usd(u.monthly_cap)}` : ""),
-                 `~${usd(u.per_call)} per run`];
+                 state.strategy === "claude" ? `~${usd(u.per_call)} per run` : (state.review.enabled ? `reviews ≈${usd(state.review.per_call)} each` : "review off")];
   $("t-claude-sub").textContent = parts.join(" · ");
   const pct = u.daily_cap ? u.today / u.daily_cap * 100 : u.monthly_cap ? u.month / u.monthly_cap * 100 : null;
   const meter = $("t-claude-meter");
@@ -618,13 +721,16 @@ function renderTrading() {
     $("t-hold-sub").textContent = "Shows after the first run";
   }
   renderSpending();
-  tradingChart.draw(hist, "Just holding " + (s.symbols[0] ? coin(s.symbols[0]) : "BTC"), "Run the first cycle to start the chart.", s.quote);
+  tradingChart.draw(botVsHold(hist, "Your bot", "Just holding " + (s.symbols[0] ? coin(s.symbols[0]) : "BTC")), "Run the first cycle to start the chart.", s.quote);
+  renderStrategy();
   renderLatest();
   renderPositions();
+  renderCoach();
   tradesTable($("trades"), s.trades, "trades", s.quote);
   historyList($("history"), s.cycles.slice(1), "history", s.quote, "Nothing yet.");
   const L = s.limits;
-  $("footer").textContent = `${s.exchange} · ${s.symbols.join(", ")} · ${s.model} (${s.effort} effort) · Safety rules: max ${L.max_trade_pct}% per trade, ${L.max_position_pct}% per coin, keep ${L.min_cash_pct}% cash, stop-loss ${L.stop_loss_pct}%, pause buys after −${L.max_daily_loss_pct}% day · Logs: ${s.data_dir}`;
+  const who = s.strategy === "claude" ? `Claude decides (${s.model}, ${s.effort} effort), max ${L.max_trade_pct}% per trade` : `${s.modes[s.strategy].name}` + (s.review.enabled ? `, reviewed by ${s.review.model} (${s.review.effort})` : ", no review");
+  $("footer").textContent = `${s.exchange} · ${s.symbols.join(", ")} · ${who} · Safety rules: max ${L.max_position_pct}% per coin, keep ${L.min_cash_pct}% cash, stop-loss ${L.stop_loss_pct}%, pause buys after −${L.max_daily_loss_pct}% day · Logs: ${s.data_dir}`;
 }
 
 /* ---------- backtest tab ---------- */
@@ -634,45 +740,83 @@ const STEPS = [[1, "every hour"], [2, "every 2 hours"], [4, "every 4 hours"], [6
 const bt = {};  // form inputs
 let selectedRun = null, runDetail = null, lastRunState = null;
 
+const BT_STRATEGIES = [["compare", "Compare all three (free)"], ["all", "All three combined"], ["trend", "Trend following"], ["breakout", "Breakout ensemble"], ["dip", "Dip buyer"], ["claude", "Claude decides everything (old, costly)"]];
+
 function buildBacktestForm() {
-  const b = state.backtest, [d0, d1] = b.default_dates;
+  const b = state.backtest;
+  const today = b.default_dates[1];
+  const yearAgo = new Date(Date.parse(today) - 365 * 86400000).toISOString().slice(0, 10);
+  bt.strategy = el("select", {}, BT_STRATEGIES.map(([v, n]) => el("option", { value: v, selected: v === "compare" }, n)));
+  bt.review = el("select", {}, [["off", "Off (free)"], ["on", "On: Claude reviews each new entry"]].map(([v, n]) => el("option", { value: v }, n)));
   bt.exchange = el("select", {}, EXCHANGES.map(([v, n]) => el("option", { value: v, selected: v === state.exchange }, n)));
   bt.coins = el("input", { value: state.symbols.join(",") });
   bt.exchange.addEventListener("change", () => { bt.coins.value = DEFAULT_COINS[bt.exchange.value] || "BTC/USD,ETH/USD,SOL/USD"; });
-  bt.start = el("input", { type: "date", value: d0 });
-  bt.end = el("input", { type: "date", value: d1, max: d1 });
+  bt.start = el("input", { type: "date", value: yearAgo });
+  bt.end = el("input", { type: "date", value: today, max: today });
   bt.step = el("select", {}, STEPS.map(([v, n]) => el("option", { value: v, selected: v === 6 }, n)));
-  bt.model = el("select", {}, b.models.map(m => el("option", { value: m, selected: m === state.model }, MODEL_NAMES[m] + (m === state.model ? " (current)" : ""))));
-  bt.effort = el("select", {}, ["low", "medium", "high", "xhigh", "max"].map(v => el("option", { value: v, selected: v === state.effort }, v)));
+  bt.model = el("select", {}, b.models.map(m => el("option", { value: m, selected: m === state.review.model }, MODEL_NAMES[m])));
+  bt.effort = el("select", {}, ["low", "medium", "high", "xhigh", "max"].map(v => el("option", { value: v, selected: v === "low" }, v)));
   bt.cash = el("input", { type: "number", min: "1", step: "100", value: state.starting_cash });
   bt.limit = el("input", { type: "number", min: "0.5", step: "0.5", value: 3 });
+  const lab = (text, input, cls) => el("label", { class: cls || "" }, text, input);
+  bt.labels = {
+    review: lab("Claude review", bt.review), step: lab("Claude decides", bt.step),
+    model: lab("Model", bt.model), effort: lab("How hard Claude thinks", bt.effort), limit: lab("Spending limit for this backtest ($)", bt.limit),
+  };
   setKids($("bt-form"),
-    el("label", {}, "Exchange (price history)", bt.exchange),
-    el("label", {}, "Coins", bt.coins),
-    el("label", {}, "From", bt.start),
-    el("label", {}, "To", bt.end),
-    el("label", {}, "Claude decides", bt.step),
-    el("label", {}, "Model", bt.model),
-    el("label", {}, "How hard Claude thinks", bt.effort),
-    el("label", {}, "Starting fake money", bt.cash),
-    el("label", {}, "Spending limit for this backtest ($)", bt.limit));
-  for (const input of Object.values(bt)) input.addEventListener("input", renderEstimate);
-  for (const input of Object.values(bt)) input.addEventListener("change", renderEstimate);
+    lab("Strategy", bt.strategy), bt.labels.review,
+    lab("Exchange (price history)", bt.exchange), lab("Coins", bt.coins),
+    lab("From", bt.start), lab("To", bt.end), bt.labels.step,
+    bt.labels.model, bt.labels.effort, lab("Starting fake money", bt.cash), bt.labels.limit);
+  const onStrategy = () => {  // sensible defaults per mode
+    const claudeMode = bt.strategy.value === "claude";
+    bt.effort.value = claudeMode ? state.effort : "low";
+    bt.model.value = claudeMode ? state.model : state.review.model;
+    if (claudeMode && (Date.parse(bt.end.value) - Date.parse(bt.start.value)) > 14 * 86400000)
+      bt.start.value = new Date(Date.parse(bt.end.value) - 7 * 86400000).toISOString().slice(0, 10);
+  };
+  bt.strategy.addEventListener("change", onStrategy);
+  for (const input of Object.values(bt)) if (input instanceof HTMLElement) { input.addEventListener("input", renderEstimate); input.addEventListener("change", renderEstimate); }
 }
 
 function renderEstimate() {
-  const b = state.backtest;
-  const ms = new Date(bt.end.value) - new Date(bt.start.value);
-  const calls = ms > 0 ? Math.floor(ms / 3600000 / Number(bt.step.value)) : 0;
-  const per = (b.estimates[bt.model.value] || {})[bt.effort.value] || 0;
-  const cost = calls * per, limit = Number(bt.limit.value) || 0;
-  const lines = [el("div", {}, "About ", el("b", {}, `${calls} Claude decisions`), " · roughly ", el("b", {}, usd(cost)), ` (≈${usd(per)} each)`)];
-  if (limit && cost > limit) lines.push(el("div", { class: "meta" }, `Your ${usd(limit)} limit will stop it after about ${Math.floor(limit / per)} decisions. Raise the limit, pick a shorter period, decide less often, or use a cheaper model.`));
-  const daysBack = (Date.now() - new Date(bt.start.value)) / 86400000;
-  if (bt.exchange.value === "kraken" && daysBack > 28) lines.push(el("div", { class: "meta" }, "Kraken only keeps about 30 days of hourly prices, so the backtest will start later than you picked. Choose Binance (coins like BTC/USDT) for longer periods."));
+  const b = state.backtest, strat = bt.strategy.value;
+  const claudeMode = strat === "claude", usesClaude = claudeMode || (strat !== "compare" && bt.review.value === "on");
+  bt.labels.review.hidden = strat === "compare" || claudeMode;
+  bt.labels.step.hidden = !claudeMode;
+  bt.labels.model.hidden = bt.labels.effort.hidden = bt.labels.limit.hidden = !usesClaude;
+  bt.labels.model.firstChild.textContent = claudeMode ? "Model" : "Review model";
+  const days = Math.max(0, (Date.parse(bt.end.value) - Date.parse(bt.start.value)) / 86400000);
+  const coins = bt.coins.value.split(",").filter(x => x.trim()).length || 1;
+  const lines = [];
+  if (!usesClaude) {
+    lines.push(el("div", {}, el("b", {}, "Free"), ` · rules only, ${Math.round(days)} days of daily decisions` + (strat === "compare" ? ", all three strategies plus their combination side by side" : "") + ". Runs in seconds."));
+  } else if (claudeMode) {
+    const calls = Math.floor(days * 24 / Number(bt.step.value));
+    const per = (b.estimates[bt.model.value] || {})[bt.effort.value] || 0;
+    lines.push(el("div", {}, "About ", el("b", {}, `${calls} Claude decisions`), " · roughly ", el("b", {}, usd(calls * per)), ` (≈${usd(per)} each)`));
+  } else {
+    const per = (b.review_estimates[bt.model.value] || {})[bt.effort.value] || 0;
+    const strategies = strat === "all" ? 3 : 1;
+    const reviews = Math.max(1, Math.round(days / 30 * coins * strategies * 1.5));  // ~1-2 new entries per coin per strategy a month
+    lines.push(el("div", {}, "Roughly ", el("b", {}, `${reviews} reviews`), " (one per new entry) · about ", el("b", {}, usd(reviews * per)), ` (≈${usd(per)} each)`));
+  }
+  const limit = Number(bt.limit.value) || 0;
+  if (claudeMode) {
+    const per = (b.estimates[bt.model.value] || {})[bt.effort.value] || 0;
+    const calls = Math.floor(days * 24 / Number(bt.step.value));
+    if (limit && calls * per > limit) lines.push(el("div", { class: "meta" }, `Your ${usd(limit)} limit will stop it after about ${Math.floor(limit / per)} decisions.`));
+  }
+  const daysBack = (Date.now() - Date.parse(bt.start.value)) / 86400000;
+  if (bt.exchange.value === "kraken" && (claudeMode ? daysBack > 28 : daysBack > 300))
+    lines.push(el("div", { class: "meta" }, claudeMode
+      ? "Kraken only keeps about 30 days of hourly prices, so the backtest will start later than you picked. Binance (coins like BTC/USDT) has more."
+      : "Kraken only keeps about 2 years of daily prices and the strategies need a year of warm-up, so long Kraken backtests start later or use shorter channels. Binance (coins like BTC/USDT) has more history."));
   const u = state.usage;
-  const caps = [u.daily_cap ? `today ${usd(u.today)} of ${usd(u.daily_cap)}` : null, u.monthly_cap ? `this month ${usd(u.month)} of ${usd(u.monthly_cap)}` : null].filter(Boolean);
-  if (caps.length) lines.push(el("div", { class: "meta" }, `Your Claude caps also apply: ${caps.join(", ")} used.`));
+  if (usesClaude) {
+    const caps = [u.daily_cap ? `today ${usd(u.today)} of ${usd(u.daily_cap)}` : null, u.monthly_cap ? `this month ${usd(u.month)} of ${usd(u.monthly_cap)}` : null].filter(Boolean);
+    if (caps.length) lines.push(el("div", { class: "meta" }, `Your Claude caps also apply: ${caps.join(", ")} used.`));
+  }
   setKids($("bt-estimate"), lines);
 }
 
@@ -680,7 +824,7 @@ $("bt-start").addEventListener("click", async () => {
   $("bt-err").textContent = "";
   $("bt-start").disabled = true;
   try {
-    await post("/api/backtest/start", { exchange: bt.exchange.value, symbols: bt.coins.value, start: bt.start.value, end: bt.end.value,
+    await post("/api/backtest/start", { strategy: bt.strategy.value, review: bt.review.value === "on", exchange: bt.exchange.value, symbols: bt.coins.value, start: bt.start.value, end: bt.end.value,
       step_hours: Number(bt.step.value), model: bt.model.value, effort: bt.effort.value, starting_cash: bt.cash.value, max_spend_usd: bt.limit.value });
     selectedRun = "__current__";
     await refresh();
@@ -697,6 +841,13 @@ async function loadRun(id) {
   renderRunDetail();
 }
 
+const runLabel = cfg => {
+  const strat = cfg.strategy || "claude";
+  if (strat === "claude") return `Claude decides · ${MODEL_NAMES[cfg.model] || cfg.model} · ${cfg.step_hours}h`;
+  const name = (BT_STRATEGIES.find(([v]) => v === strat) || [, strat])[1].replace(" (free)", "");
+  return name + (cfg.review ? ` · ${MODEL_NAMES[cfg.model] || cfg.model} review` : "");
+};
+
 function renderRunDetail() {
   $("bt-detail").hidden = !runDetail;
   if (!runDetail) return;
@@ -705,16 +856,37 @@ function renderRunDetail() {
   $("bt-note").textContent = s.note || "";
   const holdName = "Just holding " + coin(cfg.symbols[0]);
   const vsHold = s.hold_return_pct !== null && s.hold_return_pct !== undefined && s.return_pct !== undefined ? s.return_pct - s.hold_return_pct : null;
+  const primaryName = s.primary ? state.modes[s.primary].name : "Return";
   setKids($("bt-tiles"),
-    tile("Return", s.return_pct === undefined ? "–" : signed(s.return_pct) + "%", s.end_equity ? `${money(s.start_equity, quote, 0)} → ${money(s.end_equity, quote, 0)}` : s.message, tone(s.return_pct)),
+    tile(s.primary ? `${primaryName} return` : "Return", s.return_pct === undefined ? "–" : signed(s.return_pct) + "%", s.end_equity ? `${money(s.start_equity, quote, 0)} → ${money(s.end_equity, quote, 0)}` : s.message, tone(s.return_pct)),
     tile(`vs just holding ${coin(cfg.symbols[0])}`, vsHold === null ? "–" : signed(vsHold) + " pts", s.hold_return_pct === null || s.hold_return_pct === undefined ? "" : `Holding returned ${signed(s.hold_return_pct)}%`, tone(vsHold)),
     tile("Worst drop", s.max_drawdown_pct === undefined ? "–" : signed(s.max_drawdown_pct) + "%", "Biggest fall from a peak"),
     tile("Trades", s.trades ?? "–", s.fees !== undefined ? `${money(s.fees, quote)} in fees` : ""),
-    tile("Claude cost", usd(s.claude_cost || 0), `${s.steps_done} decisions · ${MODEL_NAMES[cfg.model] || cfg.model}, ${cfg.effort}`));
-  $("bt-chart-title").textContent = `${cfg.start} to ${cfg.end} · ${cfg.symbols.map(coin).join(", ")} · decided every ${cfg.step_hours}h`;
-  backtestChart.draw(runDetail.history, holdName, s.state === "error" ? s.message : "Waiting for the first decisions…", quote);
+    tile("Claude cost", usd(s.claude_cost || 0), (cfg.strategy || "claude") === "claude" ? `${s.steps_done} decisions · ${MODEL_NAMES[cfg.model] || cfg.model}, ${cfg.effort}` : (cfg.review ? "reviews of new entries" : "rules only: free")));
+  const strat = cfg.strategy || "claude";
+  $("bt-chart-title").textContent = `${cfg.start} to ${cfg.end} · ${cfg.symbols.map(coin).join(", ")} · ` + (strat === "claude" ? `Claude decided every ${cfg.step_hours}h` : "decided at each daily close");
+  let series;
+  if (runDetail.curves) {
+    const modes = Object.keys(runDetail.curves).filter(k => k !== "hold");
+    series = modes.map(k => ({ name: state.modes[k].name, color: MODE_COLORS[k], points: runDetail.curves[k].map(p => ({ time: p.time, value: p.equity })) }))
+      .concat([{ name: holdName, ...HOLD_STYLE, points: runDetail.curves.hold.map(p => ({ time: p.time, value: p.equity })) }]);
+  } else {
+    series = botVsHold(runDetail.history, "Claude's trades", holdName);
+  }
+  backtestChart.draw(series, s.state === "error" ? s.message : "Waiting for results…", quote);
+  const extra = [];
+  if (s.strategies && Object.keys(s.strategies).length > 1) {
+    extra.push(el("div", { class: "scroll", style: "margin-top:12px" }, el("table", {},
+      el("thead", {}, el("tr", {}, el("th", {}, "Strategy"), el("th", { class: "num" }, "Return"), el("th", { class: "num" }, "Worst drop"), el("th", { class: "num" }, "Trades"), el("th", { class: "num" }, "Fees"))),
+      el("tbody", {}, Object.entries(s.strategies).map(([k, st]) => el("tr", {}, el("td", {}, el("i", { style: `display:inline-block;width:12px;height:2px;margin-right:6px;vertical-align:middle;background:${MODE_COLORS[k]}` }), state.modes[k].name),
+        el("td", { class: "num " + tone(st.return_pct) }, signed(st.return_pct) + "%"), el("td", { class: "num" }, signed(st.max_drawdown_pct) + "%"),
+        el("td", { class: "num" }, st.trades), el("td", { class: "num" }, money(st.fees, quote)))),
+        el("tr", {}, el("td", {}, holdName), el("td", { class: "num " + tone(s.hold_return_pct) }, s.hold_return_pct === null || s.hold_return_pct === undefined ? "–" : signed(s.hold_return_pct) + "%"), el("td", {}, ""), el("td", {}, ""), el("td", {}, ""))))));
+  }
+  setKids($("bt-extra"), extra);
+  $("bt-trades-title").textContent = s.primary && Object.keys(s.strategies || {}).length > 1 ? `Trades (${primaryName})` : "Trades";
   tradesTable($("bt-trades"), runDetail.trades, "bt-trades", quote);
-  historyList($("bt-history"), runDetail.cycles, "bt-history", quote, "No decisions yet.");
+  historyList($("bt-history"), runDetail.cycles, "bt-history", quote, strat === "claude" ? "No decisions yet." : "No trades yet.");
 }
 
 function renderBacktest() {
@@ -728,7 +900,7 @@ function renderBacktest() {
     $("bt-progress").querySelector("h2").textContent = running ? "Running" : cur.state === "done" ? "Finished" : cur.state === "error" ? "Failed" : "Stopped";
     $("bt-progress-text").textContent = cur.message + (cur.total ? ` · step ${Math.min(cur.step + (running ? 1 : 0), cur.total)} of ${cur.total}` : "");
     $("bt-progress-bar").style.width = (cur.total ? Math.min(100, cur.step / cur.total * 100) : 0) + "%";
-    $("bt-progress-cost").textContent = `Claude spent ${usd(cur.spent)} of your ${usd(cur.max_spend)} limit`;
+    $("bt-progress-cost").textContent = cur.uses_claude ? `Claude spent ${usd(cur.spent)} of your ${usd(cur.max_spend)} limit` : "Rules only: no Claude cost";
     $("bt-stop").hidden = !running;
   }
   if (selectedRun === "__current__" && cur) selectedRun = cur.id;
@@ -736,13 +908,13 @@ function renderBacktest() {
   const runs = b.runs;
   if (!runs.length && !cur) setKids($("bt-runs"), el("div", { class: "empty" }, "No backtests yet."));
   else setKids($("bt-runs"), el("table", {},
-    el("thead", {}, el("tr", {}, el("th", {}, "Period"), el("th", {}, "Coins"), el("th", {}, "Model"), el("th", { class: "num" }, "Return"), el("th", { class: "num" }, "Holding"), el("th", { class: "num" }, "Trades"), el("th", { class: "num" }, "Claude cost"), el("th", {}, "Status"))),
+    el("thead", {}, el("tr", {}, el("th", {}, "Period"), el("th", {}, "Coins"), el("th", {}, "Strategy"), el("th", { class: "num" }, "Return"), el("th", { class: "num" }, "Holding"), el("th", { class: "num" }, "Trades"), el("th", { class: "num" }, "Claude cost"), el("th", {}, "Status"))),
     el("tbody", {}, runs.map(r => {
       const c = r.config;
       const row = el("tr", { class: "pick", tabindex: 0, "aria-selected": String(r.id === selectedRun) },
         el("td", { class: "nowrap" }, `${c.start} → ${c.end}`),
         el("td", {}, c.symbols.map(coin).join(", ")),
-        el("td", { class: "nowrap" }, `${MODEL_NAMES[c.model] || c.model} · ${c.step_hours}h`),
+        el("td", {}, runLabel(c)),
         el("td", { class: "num " + tone(r.return_pct) }, r.return_pct === undefined ? "–" : signed(r.return_pct) + "%"),
         el("td", { class: "num" }, r.hold_return_pct === undefined || r.hold_return_pct === null ? "–" : signed(r.hold_return_pct) + "%"),
         el("td", { class: "num" }, r.trades ?? "–"),

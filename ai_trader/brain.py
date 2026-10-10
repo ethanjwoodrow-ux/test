@@ -1,4 +1,5 @@
-"""The AI part: Claude reads the market snapshot and portfolio, then proposes buy/sell/hold per coin."""
+"""The AI part. In strategy modes Claude only reviews new entries and writes a weekly strategy review;
+in the old "Claude decides" mode it makes every buy/sell/hold call."""
 
 import json
 from dataclasses import asdict
@@ -94,7 +95,9 @@ def _clean(raw: dict, symbols: list[str]) -> list[dict]:
     return out
 
 
-class ClaudeBrain:
+class _ClaudeCaller:
+    """One structured-output Claude request, with the budget check before it and cost logging after it."""
+
     def __init__(self, model: str, effort: str, client: anthropic.Anthropic | None = None,
                  ledger: UsageLedger | None = None, budget: Budget | None = None, source: str = "paper"):
         self.model = model
@@ -104,52 +107,135 @@ class ClaudeBrain:
         self.budget = budget
         self.source = source
 
-    def decide(self, snapshots: dict, portfolio: dict, limits: RiskLimits, history: list[dict]) -> dict:
-        """Returns {"market_view", "decisions", "error"?}. Any failure means hold everything."""
-        symbols = list(snapshots)
+    def _ask(self, system: str, user: str, schema: dict, max_tokens: int = 16000) -> tuple[dict | None, str | None, dict | None]:
+        """Returns (parsed JSON, error, usage). On any error the caller should fall back safely."""
         if self.ledger and self.budget:
             problem = self.ledger.budget_problem(self.budget, self.ledger.typical_call(self.model, self.effort))
             if problem:
-                return self._fail(problem)
+                return None, problem, None
         fallback = ({"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
                     if self.model in FALLBACK_MODELS else {})
         try:
             response = self.client.beta.messages.create(
                 model=self.model,
-                max_tokens=16000,
+                max_tokens=max_tokens,
                 **fallback,
-                output_config={"effort": self.effort,
-                               "format": {"type": "json_schema", "schema": decision_schema(symbols)}},
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": build_prompt(snapshots, portfolio, limits, history)}],
+                output_config={"effort": self.effort, "format": {"type": "json_schema", "schema": schema}},
+                system=system,
+                messages=[{"role": "user", "content": user}],
             )
         except anthropic.AuthenticationError:
-            return self._fail("Anthropic API key missing or invalid (set ANTHROPIC_API_KEY in .env)")
+            return None, "Anthropic API key missing or invalid (set ANTHROPIC_API_KEY in .env)", None
         except anthropic.RateLimitError:
-            return self._fail("rate limited by Anthropic API")
+            return None, "rate limited by Anthropic API", None
         except anthropic.APIStatusError as e:
-            return self._fail(f"Anthropic API error {e.status_code}: {e.message}")
+            return None, f"Anthropic API error {e.status_code}: {e.message}", None
         except anthropic.APIConnectionError:
-            return self._fail("could not reach Anthropic API")
+            return None, "could not reach Anthropic API", None
 
         usage = response.usage
         cost = None
         if self.ledger:  # billed even when the reply turns out unusable
             cost = self.ledger.record(getattr(response, "model", None) or self.model,
                                       usage.input_tokens, usage.output_tokens, self.source)
+        info = {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "cost": cost}
         if response.stop_reason in ("refusal", "max_tokens"):
-            return self._fail(f"model stopped with {response.stop_reason}")
+            return None, f"model stopped with {response.stop_reason}", info
         text = next((b.text for b in response.content if b.type == "text"), "")
         try:
-            raw = json.loads(text)
+            return json.loads(text), None, info
         except json.JSONDecodeError:
-            return self._fail("model returned invalid JSON")
-        return {
-            "market_view": str(raw.get("market_view", "")),
-            "decisions": _clean(raw, symbols),
-            "usage": {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "cost": cost},
-        }
+            return None, "model returned invalid JSON", info
 
-    @staticmethod
-    def _fail(why: str) -> dict:
-        return {"market_view": "", "decisions": [], "error": why}
+
+class ClaudeBrain(_ClaudeCaller):
+    """Old mode: Claude makes every buy/sell/hold call itself. Costs far more than the strategy modes."""
+
+    def decide(self, snapshots: dict, portfolio: dict, limits: RiskLimits, history: list[dict]) -> dict:
+        """Returns {"market_view", "decisions", "error"?}. Any failure means hold everything."""
+        symbols = list(snapshots)
+        raw, error, usage = self._ask(SYSTEM_PROMPT, build_prompt(snapshots, portfolio, limits, history),
+                                      decision_schema(symbols))
+        if error:
+            return {"market_view": "", "decisions": [], "error": error, "usage": usage}
+        return {"market_view": str(raw.get("market_view", "")), "decisions": _clean(raw, symbols), "usage": usage}
+
+
+# ---------- strategy mode: Claude only reviews ----------
+
+REVIEW_SYSTEM = """You review trade entries proposed by a rule-based crypto strategy (spot only, no leverage). \
+The rules are tested and usually right, so approve by default. Veto or shrink only for a concrete reason \
+the rules can't see, such as a parabolic run far above the averages, extreme volatility, or a signal that \
+contradicts the bigger trend. size: 1 = full position, 0.5 = half, 0 = skip. One short sentence per reason."""
+
+
+def review_schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "reviews": {"type": "array", "items": {
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "approve": {"type": "boolean"},
+                    "size": {"type": "number"},
+                    "reason": {"type": "string"},
+                },
+                "required": ["id", "approve", "size", "reason"],
+                "additionalProperties": False,
+            }},
+        },
+        "required": ["reviews"],
+        "additionalProperties": False,
+    }
+
+
+class ClaudeReviewer(_ClaudeCaller):
+    """Reviews new entries from the strategies. One small request per batch of new signals."""
+
+    def review(self, entries: list[dict], context: dict) -> dict:
+        """entries: [{"id", "symbol", "strategy", "rule", "reason", "facts"}]. Returns {"reviews": {id: {...}}, "error"?, "usage"}."""
+        payload = {"proposed_entries": entries, "account": context}
+        raw, error, usage = self._ask(REVIEW_SYSTEM, json.dumps(payload, separators=(",", ":"), default=str),
+                                      review_schema(), max_tokens=4000)
+        if error:
+            return {"reviews": {}, "error": error, "usage": usage}
+        ids = {e["id"] for e in entries}
+        out = {}
+        for r in raw.get("reviews", []):
+            if r.get("id") in ids:
+                size = max(0.0, min(1.0, float(r.get("size", 1))))
+                approve = bool(r.get("approve")) and size > 0
+                out[r["id"]] = {"approve": approve, "size": size if approve else 0.0, "reason": str(r.get("reason", ""))}
+        return {"reviews": out, "usage": usage}
+
+
+COACH_SYSTEM = """You are reviewing three rule-based crypto strategies that a small spot account can switch \
+between (or run all together). You get each strategy's recent results on the same coins, plain buy-and-hold \
+for comparison, and current market conditions. Say plainly how each is doing and why (trend vs choppy market, \
+fees from churn, etc.), and recommend which mode to run now. Be honest when results are too short or close to \
+call, and don't recommend switching on noise. Keep it under 150 words, plain English, no hype."""
+
+
+def coach_schema(modes: list[str]) -> dict:
+    return {
+        "type": "object",
+        "properties": {
+            "summary": {"type": "string"},
+            "recommended_mode": {"type": "string", "enum": modes},
+            "confidence": {"type": "string", "enum": ["low", "medium", "high"]},
+        },
+        "required": ["summary", "recommended_mode", "confidence"],
+        "additionalProperties": False,
+    }
+
+
+class StrategyCoach(_ClaudeCaller):
+    """Weekly (or on-demand) review of how the strategies are doing. One request."""
+
+    def assess(self, stats: dict, modes: list[str]) -> dict:
+        raw, error, usage = self._ask(COACH_SYSTEM, json.dumps(stats, separators=(",", ":"), default=str),
+                                      coach_schema(modes), max_tokens=4000)
+        if error:
+            return {"error": error, "usage": usage}
+        return {**raw, "usage": usage}

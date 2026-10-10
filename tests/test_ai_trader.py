@@ -229,3 +229,25 @@ def test_haiku_skips_fallbacks():
     client, msgs = fake_client({"market_view": "", "decisions": []})
     ClaudeBrain("claude-haiku-5-5", "low", client=client).decide({"BTC/USD": {}}, portfolio(), LIMITS, [])
     assert "fallbacks" not in msgs.calls[0] and "betas" not in msgs.calls[0]
+
+
+def test_strategy_cycle_end_to_end(tmp_path):
+    from ai_trader.engine import ReviewStore, StrategyEngine
+
+    class DailyMarket(FakeMarket):
+        def daily(self, symbol, limit):
+            if symbol not in self.prices:
+                raise RuntimeError("exchange down")
+            closes = [self.prices[symbol] * 0.6 * 1.004 ** i for i in range(limit)]
+            return [[1_600_000_000_000 + i * 86_400_000, c, c, c, c, 1.0] for i, c in enumerate(closes)]
+
+    settings = Settings.from_env()
+    settings.symbols, settings.limits = ["BTC/USD", "ETH/USD"], LIMITS
+    broker = PaperBroker(tmp_path / "p.json", 10000, 0, 0)
+    engine = StrategyEngine("trend", LIMITS, None, ReviewStore(tmp_path / "reviews.json"))
+    bot = TradingBot(settings, DailyMarket({"BTC/USD": 100.0}), broker, FakeBrain([]), Journal(tmp_path), engine=engine)
+    rec = bot.run_cycle()
+    assert rec["strategy"] == "trend"
+    assert [f["symbol"] for f in rec["fills"]] == ["BTC/USD"]  # ETH had no data: left alone, not sold or bought
+    assert any("ETH/USD" in e for e in rec["errors"])
+    assert bot.brain.seen == []  # Claude-decides brain never used in strategy mode
