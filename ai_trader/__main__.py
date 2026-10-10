@@ -59,13 +59,19 @@ def show_status(bot: TradingBot):
 
 def main():
     parser = argparse.ArgumentParser(prog="ai_trader", description="AI crypto trading bot powered by Claude")
-    sub = parser.add_subparsers(dest="cmd", required=True)
+    sub = parser.add_subparsers(dest="cmd")
+    sub.add_parser("dashboard", help="open the web dashboard (the default)")
     sub.add_parser("run", help="run one trading cycle")
     loop = sub.add_parser("loop", help="run a cycle every N minutes until stopped (Ctrl+C)")
     loop.add_argument("--minutes", type=float, default=60)
     sub.add_parser("status", help="show the current portfolio")
     sub.add_parser("reset", help="wipe the paper portfolio and logs and start over")
     args = parser.parse_args()
+
+    if args.cmd in (None, "dashboard"):
+        from ai_trader.dashboard import run
+        run()
+        return
 
     settings = Settings.from_env()
 

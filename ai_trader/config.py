@@ -6,7 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
+ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
+load_dotenv(ENV_PATH)
 
 # Must be set exactly to this in .env before the bot will place real orders.
 LIVE_CONFIRM_PHRASE = "I_UNDERSTAND_THE_RISKS"

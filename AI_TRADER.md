@@ -18,15 +18,31 @@ Every cycle (once an hour by default):
 
 If anything goes wrong (the exchange is down, the API errors, or the reply can't be parsed), it holds everything for that cycle.
 
-## Setup (Windows)
+## Start it (Windows)
 
-1. Get a Claude API key at https://platform.claude.com. You have to add credit there.
-2. Double-click **`TRADER_SETUP.bat`**, paste your key and press Enter to use Kraken.
-3. Double-click **`TRADE_ONCE.bat`** to run one cycle and see what it thinks.
-4. Double-click **`TRADE_LOOP.bat`** to keep it trading every hour while the window is open.
-5. Double-click **`TRADER_STATUS.bat`** to see the portfolio and the return since you started.
+You need Python 3.10 or newer from https://www.python.org/downloads/. Tick **"Add Python to PATH"** during install.
 
-From a terminal it's `python -m ai_trader run | loop --minutes 60 | status | reset`.
+1. **Double-click `START_TRADER.py`.** A black window opens. The first time, it installs what it needs, which takes about a minute. Then the dashboard opens in your browser at http://127.0.0.1:8765.
+2. **Paste your Claude API key** into the setup screen and click **Save and start**. Get a key at https://platform.claude.com and add a few dollars of credit there first.
+3. Click **Run now** to watch one round of decisions, or set **Auto-trade** to run every hour (or 15 min to once a day).
+
+Keep the black window open while it trades. Closing it stops the bot. Next time, double-click `START_TRADER.py` again; auto-trade picks up where you left it.
+
+If double-clicking opens the file in an editor or Notepad instead, right-click it, choose **Open with**, then **Python**.
+
+The `.py` launcher is used instead of `.bat` files because Windows Smart App Control blocks downloaded `.bat` scripts.
+
+### What the dashboard shows
+
+- **Total value, return since start, and vs just holding BTC.** That last one is the honest test: is the bot beating doing nothing?
+- **Value over time:** the bot's portfolio next to what holding BTC from day one would be worth. Hover for exact numbers.
+- **Latest AI decision:** Claude's read of the market and its call on each coin, with its reasoning, plus anything the safety rules blocked.
+- **Holdings, trades and earlier decisions.**
+- **Settings:** change the exchange, coins, how hard Claude thinks, or reset the paper account.
+
+### Command line (optional)
+
+`python -m ai_trader` opens the dashboard. `python -m ai_trader run | loop --minutes 60 | status | reset` do the same jobs without it.
 
 Logs are saved to `%USERPROFILE%\ai_trader_data\paper\`. `trades.csv` opens in Excel.
 

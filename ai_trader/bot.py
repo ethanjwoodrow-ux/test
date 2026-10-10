@@ -2,6 +2,8 @@
 
 from datetime import datetime, timezone
 
+import ccxt
+
 from ai_trader import risk
 from ai_trader.broker import LiveBroker, PaperBroker
 from ai_trader.brain import ClaudeBrain
@@ -48,6 +50,10 @@ class TradingBot:
         for symbol in self.settings.symbols:
             try:
                 snapshots[symbol] = self.market.snapshot(symbol)
+            except ccxt.BadSymbol:
+                errors.append(f"{symbol} isn't traded on {self.settings.exchange}; check the coin list in settings")
+            except ccxt.NetworkError:
+                errors.append(f"couldn't reach {self.settings.exchange} for {symbol} (internet down or exchange unavailable)")
             except Exception as e:
                 errors.append(f"market data for {symbol} failed: {e}")
         if not snapshots:
