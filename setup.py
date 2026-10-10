@@ -17,6 +17,8 @@ setup(
         "rich>=13.0.0",
         "schedule>=1.2.0",
         "aiofiles>=23.0.0",
+        "anthropic>=1.13.0",
+        "ccxt>=4.5.0",
     ],
     entry_points={
         "console_scripts": [
@@ -26,6 +28,7 @@ setup(
             "uc-calendar=scripts.build_calendar:main",
             "uc-download=scripts.download_materials:main",
             "uc-diff=scripts.check_new_content:main",
+            "ai-trader=ai_trader.__main__:main",
         ],
     },
     python_requires=">=3.11",

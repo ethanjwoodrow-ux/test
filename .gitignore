@@ -29,3 +29,7 @@ env/
 # OS
 .DS_Store
 Thumbs.db
+
+# AI trader runtime data
+ai_trader_data/
+.pytest_cache/
