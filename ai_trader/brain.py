@@ -6,6 +6,10 @@ from dataclasses import asdict
 import anthropic
 
 from ai_trader.config import RiskLimits
+from ai_trader.usage import Budget, UsageLedger
+
+# Models that accept server-side refusal fallbacks (Haiku has none).
+FALLBACK_MODELS = {"claude-fable-5-1", "claude-opus-5-5", "claude-opus-5", "claude-sonnet-5-5"}
 
 SYSTEM_PROMPT = """You are the decision engine of an automated crypto spot-trading bot. Each run you get \
 fresh market data for a fixed list of coins, the current portfolio, the risk limits, and a log of your \
@@ -91,20 +95,29 @@ def _clean(raw: dict, symbols: list[str]) -> list[dict]:
 
 
 class ClaudeBrain:
-    def __init__(self, model: str, effort: str, client: anthropic.Anthropic | None = None):
+    def __init__(self, model: str, effort: str, client: anthropic.Anthropic | None = None,
+                 ledger: UsageLedger | None = None, budget: Budget | None = None, source: str = "paper"):
         self.model = model
         self.effort = effort
         self.client = client or anthropic.Anthropic()
+        self.ledger = ledger
+        self.budget = budget
+        self.source = source
 
     def decide(self, snapshots: dict, portfolio: dict, limits: RiskLimits, history: list[dict]) -> dict:
         """Returns {"market_view", "decisions", "error"?}. Any failure means hold everything."""
         symbols = list(snapshots)
+        if self.ledger and self.budget:
+            problem = self.ledger.budget_problem(self.budget, self.ledger.typical_call(self.model, self.effort))
+            if problem:
+                return self._fail(problem)
+        fallback = ({"betas": ["server-side-fallback-2026-07-01"], "fallbacks": "default"}
+                    if self.model in FALLBACK_MODELS else {})
         try:
             response = self.client.beta.messages.create(
                 model=self.model,
                 max_tokens=16000,
-                betas=["server-side-fallback-2026-07-01"],
-                fallbacks="default",
+                **fallback,
                 output_config={"effort": self.effort,
                                "format": {"type": "json_schema", "schema": decision_schema(symbols)}},
                 system=SYSTEM_PROMPT,
@@ -119,6 +132,11 @@ class ClaudeBrain:
         except anthropic.APIConnectionError:
             return self._fail("could not reach Anthropic API")
 
+        usage = response.usage
+        cost = None
+        if self.ledger:  # billed even when the reply turns out unusable
+            cost = self.ledger.record(getattr(response, "model", None) or self.model,
+                                      usage.input_tokens, usage.output_tokens, self.source)
         if response.stop_reason in ("refusal", "max_tokens"):
             return self._fail(f"model stopped with {response.stop_reason}")
         text = next((b.text for b in response.content if b.type == "text"), "")
@@ -126,11 +144,10 @@ class ClaudeBrain:
             raw = json.loads(text)
         except json.JSONDecodeError:
             return self._fail("model returned invalid JSON")
-        usage = response.usage
         return {
             "market_view": str(raw.get("market_view", "")),
             "decisions": _clean(raw, symbols),
-            "usage": {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens},
+            "usage": {"input_tokens": usage.input_tokens, "output_tokens": usage.output_tokens, "cost": cost},
         }
 
     @staticmethod

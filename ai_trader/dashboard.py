@@ -10,26 +10,38 @@ import threading
 import time
 import webbrowser
 from dataclasses import asdict
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import anthropic
 import ccxt
 
-from ai_trader.bot import build_bot
+from ai_trader import backtest
+from ai_trader.bot import build_bot, usage_ledger
 from ai_trader.config import ENV_PATH, Settings
+from ai_trader.usage import EFFORT_OUTPUT_FACTOR, guess_call_cost
 
 HOST = "127.0.0.1"
 PORT = 8765
 PAGE = Path(__file__).with_name("dashboard.html")
 PRICE_REFRESH_SECONDS = 30
-SETTING_KEYS = {
-    "api_key": "ANTHROPIC_API_KEY",
-    "exchange": "TRADER_EXCHANGE",
-    "symbols": "TRADER_SYMBOLS",
-    "starting_cash": "PAPER_STARTING_CASH",
-    "effort": "TRADER_EFFORT",
-}
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+BACKTEST_MODELS = ("claude-opus-5-5", "claude-sonnet-5-5", "claude-haiku-5-5")
+SYMBOL_RE = re.compile(r"[A-Z0-9]+/[A-Z0-9]+")
+
+
+def parse_symbols(raw: str) -> list[str] | None:
+    symbols = [s.strip().upper() for s in raw.split(",") if s.strip()]
+    return symbols if symbols and all(SYMBOL_RE.fullmatch(s) for s in symbols) else None
+
+
+def _positive(raw, allow_zero=False) -> float | None:
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return v if v > 0 or (allow_zero and v == 0) else None
 
 
 def update_env_file(path: Path, values: dict[str, str]):
@@ -84,6 +96,7 @@ class Controller:
         self.last_error: str | None = None
         self.portfolio: dict | None = None
         self.portfolio_at = 0.0
+        self.backtest: backtest.BacktestRun | None = None
         self._load()
         prefs = self._prefs()
         if prefs.get("auto_minutes") and not self.settings.is_live and self.bot:
@@ -102,6 +115,7 @@ class Controller:
             self.setup_error = str(e)
         except Exception as e:
             self.setup_error = f"Could not start the bot: {e}"
+        self.ledger = usage_ledger(self.settings)
         self.portfolio, self.portfolio_at = None, 0.0
 
     def _prefs_path(self) -> Path:
@@ -130,10 +144,17 @@ class Controller:
                 return f"Unknown exchange {body['exchange']!r}."
             values["TRADER_EXCHANGE"] = body["exchange"]
         if body.get("symbols"):
-            symbols = [s.strip().upper() for s in body["symbols"].split(",") if s.strip()]
-            if not symbols or not all(re.fullmatch(r"[A-Z0-9]+/[A-Z0-9]+", s) for s in symbols):
+            symbols = parse_symbols(body["symbols"])
+            if not symbols:
                 return "Coins must look like BTC/USD, separated by commas."
             values["TRADER_SYMBOLS"] = ",".join(symbols)
+        for field, env, label in (("daily_budget", "CLAUDE_DAILY_BUDGET_USD", "Daily cap"),
+                                  ("monthly_budget", "CLAUDE_MONTHLY_BUDGET_USD", "Monthly cap")):
+            if body.get(field) not in (None, ""):
+                v = _positive(body[field], allow_zero=True)
+                if v is None:
+                    return f"{label} must be a number (0 means no cap)."
+                values[env] = f"{v:g}"
         if body.get("starting_cash"):
             try:
                 if float(body["starting_cash"]) <= 0:
@@ -142,7 +163,7 @@ class Controller:
                 return "Starting cash must be a positive number."
             values["PAPER_STARTING_CASH"] = str(body["starting_cash"])
         if body.get("effort"):
-            if body["effort"] not in ("low", "medium", "high", "xhigh", "max"):
+            if body["effort"] not in EFFORTS:
                 return "Unknown effort level."
             values["TRADER_EFFORT"] = body["effort"]
         if not values:
@@ -226,6 +247,90 @@ class Controller:
             except Exception as e:
                 self.last_error = f"Could not read portfolio: {e}"
 
+    # ---- backtests ----
+
+    def start_backtest(self, body: dict) -> str | None:
+        if self.backtest and self.backtest.state in ("starting", "loading", "running"):
+            return "A backtest is already running. Stop it first."
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            return "Add your Claude API key first."
+        symbols = parse_symbols(body.get("symbols", ""))
+        if not symbols:
+            return "Coins must look like BTC/USD, separated by commas."
+        if body.get("exchange") not in ccxt.exchanges:
+            return "Pick an exchange."
+        try:
+            start = datetime.strptime(body.get("start", ""), "%Y-%m-%d").date()
+            end = datetime.strptime(body.get("end", ""), "%Y-%m-%d").date()
+        except ValueError:
+            return "Pick a start and end date."
+        if start >= end:
+            return "The end date has to be after the start date."
+        if end > datetime.now(timezone.utc).date() + timedelta(days=1):
+            return "The end date can't be in the future."
+        step = int(body.get("step_hours") or 0)
+        if step not in (1, 2, 4, 6, 12, 24):
+            return "Pick how often Claude decides."
+        if body.get("model") not in BACKTEST_MODELS or body.get("effort") not in EFFORTS:
+            return "Pick a model and effort."
+        cash, limit = _positive(body.get("starting_cash")), _positive(body.get("max_spend_usd"))
+        if cash is None or limit is None:
+            return "Starting money and spending limit must be positive numbers."
+        problem = self.ledger.budget_problem(self.settings.budget, self.ledger.typical_call(body["model"], body["effort"]))
+        if problem:
+            return f"Can't start: {problem}. You can raise the caps in Settings."
+        cfg = backtest.BacktestConfig(exchange=body["exchange"], symbols=symbols, start=start.isoformat(),
+                                      end=end.isoformat(), step_hours=step, model=body["model"],
+                                      effort=body["effort"], starting_cash=cash, max_spend_usd=limit)
+        self.backtest = backtest.BacktestRun(cfg, self.settings, self.ledger,
+                                             backtest.new_run_dir(self._backtest_root()))
+        self.backtest.start()
+        return None
+
+    def stop_backtest(self) -> str | None:
+        if self.backtest:
+            self.backtest.stop()
+        return None
+
+    def _backtest_root(self) -> Path:
+        return self.settings.data_dir / "backtests"
+
+    def backtest_detail(self, run_id: str) -> dict | None:
+        if not re.fullmatch(r"\d{8}-\d{6}", run_id):
+            return None
+        run_dir = self._backtest_root() / run_id
+        if not (run_dir / "summary.json").exists():
+            return None
+        journal_cycles = [json.loads(line) for line in (run_dir / "cycles.jsonl").read_text().splitlines()
+                          if line.strip()] if (run_dir / "cycles.jsonl").exists() else []
+        summary = json.loads((run_dir / "summary.json").read_text())
+        live = self.backtest if self.backtest and self.backtest.id == run_id else None
+        if live and live.state in ("starting", "loading", "running"):  # fresh numbers mid-run
+            summary.update(backtest.results(journal_cycles, summary["config"]["symbols"][0]),
+                           state=live.state, message=live.message, claude_cost=live.status()["spent"])
+        return {
+            "summary": summary,
+            "history": equity_history(journal_cycles, summary["config"]["symbols"][0]),
+            "cycles": [{k: c.get(k) for k in ("time", "market_view", "decisions", "rejected", "fills", "errors")}
+                       for c in reversed(journal_cycles[-200:])],
+            "trades": read_trades(run_dir / "trades.csv", 500),
+        }
+
+    def _cost_estimates(self) -> dict:
+        """Rough cost of one Claude call per backtest model and effort. Uses your real average where known."""
+        s = self.settings
+        recent = [e["cost"] for e in self.ledger.entries() if e["model"] == s.model][-10:]
+        avg = sum(recent) / len(recent) if recent else None
+        out = {}
+        for model in BACKTEST_MODELS:
+            out[model] = {}
+            for effort in EFFORTS:
+                if model == s.model and avg is not None:
+                    out[model][effort] = avg * EFFORT_OUTPUT_FACTOR[effort] / EFFORT_OUTPUT_FACTOR.get(s.effort, 1.0)
+                else:
+                    out[model][effort] = guess_call_cost(model, effort)
+        return out
+
     # ---- view ----
 
     def state(self) -> dict:
@@ -238,6 +343,15 @@ class Controller:
             "next_run_in": max(0, round(self.next_run - time.time())) if self.next_run else None,
             "last_error": self.last_error, "limits": asdict(s.limits), "data_dir": str(s.data_dir / s.mode),
             "portfolio": None, "history": [], "cycles": [], "trades": [],
+            "usage": {**self.ledger.summary(), "daily_cap": s.budget.daily_usd, "monthly_cap": s.budget.monthly_usd,
+                      "per_call": self.ledger.typical_call(s.model, s.effort)},
+            "backtest": {
+                "current": self.backtest.status() if self.backtest else None,
+                "runs": backtest.list_runs(self._backtest_root())[:20],
+                "default_dates": backtest.default_dates(7),
+                "estimates": self._cost_estimates(),
+                "models": BACKTEST_MODELS,
+            },
         }
         if not self.bot:
             return out
@@ -306,6 +420,9 @@ def make_handler(controller: Controller, token: str, port: int):
                 return self._send(200, page, "text/html; charset=utf-8")
             if self.path == "/api/state":
                 return self._send(200, controller.state())
+            if self.path.startswith("/api/backtest/"):
+                detail = controller.backtest_detail(self.path.rsplit("/", 1)[1])
+                return self._send(200 if detail else 404, detail or {"error": "not found"})
             self._send(404, {"error": "not found"})
 
         def do_POST(self):
@@ -326,6 +443,10 @@ def make_handler(controller: Controller, token: str, port: int):
                 err = controller.save_settings(body)
             elif self.path == "/api/reset":
                 err = controller.reset_paper()
+            elif self.path == "/api/backtest/start":
+                err = controller.start_backtest(body)
+            elif self.path == "/api/backtest/stop":
+                err = controller.stop_backtest()
             else:
                 return self._send(404, {"error": "not found"})
             self._send(400 if err else 200, {"error": err} if err else {"ok": True})

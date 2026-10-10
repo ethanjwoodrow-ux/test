@@ -10,15 +10,20 @@ from ai_trader.brain import ClaudeBrain
 from ai_trader.config import Settings
 from ai_trader.journal import Journal
 from ai_trader.market import MarketData, make_exchange
+from ai_trader.usage import UsageLedger
 
 
 class TradingBot:
-    def __init__(self, settings: Settings, market, broker, brain, journal: Journal):
+    def __init__(self, settings: Settings, market, broker, brain, journal: Journal, clock=None):
         self.settings = settings
+        self.clock = clock or (lambda: datetime.now(timezone.utc))  # backtests pass a simulated clock
         self.market = market
         self.broker = broker
         self.brain = brain
         self.journal = journal
+
+    def _now(self) -> str:
+        return self.clock().isoformat(timespec="seconds")
 
     def portfolio(self, prices: dict[str, float]) -> dict:
         cash = self.broker.cash()
@@ -41,6 +46,7 @@ class TradingBot:
         except Exception as e:  # exchange rejections, min-size errors, network blips
             errors.append(f"{order.side} {order.symbol} failed: {e}")
             return
+        fill.timestamp = self._now()
         fills.append(fill.to_dict())
         self.journal.log_fill(fill.to_dict())
 
@@ -57,14 +63,14 @@ class TradingBot:
             except Exception as e:
                 errors.append(f"market data for {symbol} failed: {e}")
         if not snapshots:
-            record = {"time": _now(), "mode": self.settings.mode, "errors": errors, "decisions": [], "fills": []}
+            record = {"time": self._now(), "mode": self.settings.mode, "errors": errors, "decisions": [], "fills": []}
             self.journal.log_cycle(record)
             return record
 
         prices = {s: snap["price"] for s, snap in snapshots.items()}
         before = self.portfolio(prices)
         limits = self.settings.limits
-        day_start = self.journal.day_start_equity(before["equity"])
+        day_start = self.journal.day_start_equity(before["equity"], self.clock())
         halted = before["equity"] < day_start * (1 - limits.max_daily_loss_pct / 100)
 
         fills: list[dict] = []
@@ -73,7 +79,7 @@ class TradingBot:
                 self._execute(order, snapshots, fills, errors)
 
         portfolio = self.portfolio(prices) if fills else before
-        decision = self.brain.decide(snapshots, portfolio, limits, self.journal.recent_history())
+        decision = self.brain.decide(snapshots, portfolio, limits, self.journal.recent_history(self.clock()))
         if decision.get("error"):
             errors.append(f"AI: {decision['error']} (holding everything this cycle)")
 
@@ -83,7 +89,7 @@ class TradingBot:
 
         after = self.portfolio(prices)
         record = {
-            "time": _now(),
+            "time": self._now(),
             "mode": self.settings.mode,
             "prices": prices,
             "equity_before": round(before["equity"], 2),
@@ -102,8 +108,6 @@ class TradingBot:
         return record
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def build_bot(settings: Settings) -> TradingBot:
@@ -120,4 +124,10 @@ def build_bot(settings: Settings) -> TradingBot:
         exchange = make_exchange(settings.exchange)
         broker = PaperBroker(data_dir / "paper_portfolio.json", settings.starting_cash,
                              settings.paper_fee_pct, settings.paper_slippage_pct)
-    return TradingBot(settings, MarketData(exchange), broker, ClaudeBrain(settings.model, settings.effort), Journal(data_dir))
+    brain = ClaudeBrain(settings.model, settings.effort, ledger=usage_ledger(settings),
+                        budget=settings.budget, source=settings.mode)
+    return TradingBot(settings, MarketData(exchange), broker, brain, Journal(data_dir))
+
+
+def usage_ledger(settings: Settings) -> UsageLedger:
+    return UsageLedger(settings.data_dir / "claude_usage.jsonl")

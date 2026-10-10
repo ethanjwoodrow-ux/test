@@ -40,6 +40,31 @@ The `.py` launcher is used instead of `.bat` files because Windows Smart App Con
 - **Holdings, trades and earlier decisions.**
 - **Settings:** change the exchange, coins, how hard Claude thinks, or reset the paper account.
 
+### Backtesting
+
+The **Backtest** tab replays real past prices and lets Claude trade them with fake money. You can see how it would have done before trusting it with anything.
+
+1. Pick the coins, a date range, how often Claude decides, and which model to use.
+2. Check the estimate under the form. It shows how many Claude calls the backtest needs and roughly what they'll cost.
+3. Set a **spending limit for this backtest**. It stops before going over it.
+4. Click **Start backtest**. You get the return, how it compares with just holding BTC, the worst drop, trades and fees, and every decision Claude made.
+
+Things to know:
+- At each step Claude only sees prices up to that moment, never what came next.
+- **Claude may still remember roughly what crypto prices did from its training**, so backtests can look better than real trading. A good backtest means "worth paper trading", not "proven".
+- **Kraken only keeps about 30 days of hourly prices.** For longer backtests pick **Binance** and coins like `BTC/USDT`.
+- A backtest makes one Claude call per step. A month of decisions every hour on Opus is about 720 calls, roughly $50. Decide less often (every 6 hours or once a day) to keep it cheap. Sonnet 5.5 costs about half as much as Opus, and Haiku 5.5 about 1/30th. A cheaper model doesn't test the exact setup you trade with, though.
+
+### Claude credit tracking and caps
+
+Every Claude call is logged with its cost in `ai_trader_data\claude_usage.jsonl`. The **Claude spent today** tile shows today's spend, this month's spend and the average cost per run.
+
+Set caps in **Settings**:
+- **Daily cap** (default $5) and **monthly cap** (default $40) cover trading and backtests together. 0 means no cap.
+- When a cap is reached, the bot holds everything instead of calling Claude. It starts again the next day (or month).
+
+The costs are estimates worked out from token counts and Anthropic's list prices. Your real bill and balance are at platform.claude.com under **Settings → Billing**. You can also set a spending limit there as a second safety net.
+
 ### Command line (optional)
 
 `python -m ai_trader` opens the dashboard. `python -m ai_trader run | loop --minutes 60 | status | reset` do the same jobs without it.
@@ -56,9 +81,11 @@ All settings go in `.env`. `.env.example` lists every option. The main ones:
 | `TRADER_SYMBOLS` | `BTC/USD,ETH/USD,SOL/USD` | Coins to trade. Use the exchange's pair names (Binance uses `BTC/USDT`) |
 | `TRADER_EFFORT` | `high` | How hard Claude thinks: `low` / `medium` / `high` / `xhigh` / `max` |
 | `PAPER_STARTING_CASH` | `10000` | Fake money for paper mode |
+| `CLAUDE_DAILY_BUDGET_USD` | `5` | Max Claude spend per day, trading + backtests (0 = no cap) |
+| `CLAUDE_MONTHLY_BUDGET_USD` | `40` | Max Claude spend per month (0 = no cap) |
 | `RISK_*` | see above | The hard limits |
 
-**API cost:** I estimate about $0.05–0.10 per cycle at `high` effort, which comes to roughly $1–2 a day if it runs hourly. I haven't measured this on a real run yet. Run it every 4 hours (`loop --minutes 240`) or set `TRADER_EFFORT=medium` to cut the cost.
+**API cost:** I estimate about $0.05–0.10 per run at `high` effort, which comes to roughly $1–2 a day if it runs hourly. The dashboard's **Claude spent today** tile shows what it actually costs you. Auto-trade every 4 hours or set effort to `medium` to cut the cost.
 
 ## Going live (real money)
 

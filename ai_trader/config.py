@@ -6,6 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from ai_trader.usage import Budget
+
 ENV_PATH = Path(__file__).resolve().parent.parent / ".env"
 load_dotenv(ENV_PATH)
 
@@ -45,6 +47,7 @@ class Settings:
     exchange_password: str
     live_confirmed: bool
     limits: RiskLimits
+    budget: Budget
 
     @property
     def is_live(self) -> bool:
@@ -79,5 +82,9 @@ class Settings:
                 max_daily_loss_pct=_float("RISK_MAX_DAILY_LOSS_PCT", "5"),
                 stop_loss_pct=_float("RISK_STOP_LOSS_PCT", "8"),
                 min_order_usd=_float("RISK_MIN_ORDER_USD", "10"),
+            ),
+            budget=Budget(
+                daily_usd=_float("CLAUDE_DAILY_BUDGET_USD", "5"),
+                monthly_usd=_float("CLAUDE_MONTHLY_BUDGET_USD", "40"),
             ),
         )

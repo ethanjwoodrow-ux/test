@@ -34,12 +34,16 @@ class Journal:
         lines = self.cycles_path.read_text().splitlines()[-n:]
         return [json.loads(line) for line in lines if line.strip()]
 
-    def recent_history(self, n: int = 12) -> list[dict]:
-        """Compact summary of recent cycles to remind the AI what it did before."""
+    def recent_history(self, now: datetime, n: int = 12) -> list[dict]:
+        """Compact summary of recent cycles to remind the AI what it did before.
+
+        Uses "hours ago" rather than dates so backtests don't hand Claude the calendar date."""
         out = []
         for c in self.cycles(n):
+            if "time" not in c:
+                continue
             out.append({
-                "time": c.get("time"),
+                "hours_ago": round((now - datetime.fromisoformat(c["time"])).total_seconds() / 3600, 1),
                 "equity": c.get("equity_after"),
                 "market_view": c.get("market_view", "")[:400],
                 "decisions": [f"{d['symbol']} {d['action']} {d['size_pct']}% conf {d['confidence']}"
@@ -48,9 +52,9 @@ class Journal:
             })
         return out
 
-    def day_start_equity(self, equity: float) -> float:
-        """Equity at the first cycle of today (UTC); used for the daily loss limit."""
-        today = datetime.now(timezone.utc).date().isoformat()
+    def day_start_equity(self, equity: float, now: datetime) -> float:
+        """Equity at the first cycle of the day (UTC); used for the daily loss limit."""
+        today = now.astimezone(timezone.utc).date().isoformat()
         state = json.loads(self.state_path.read_text()) if self.state_path.exists() else {}
         if state.get("day") != today:
             state = {"day": today, "start_equity": equity}

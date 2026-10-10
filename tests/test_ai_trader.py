@@ -191,7 +191,7 @@ def test_cycle_executes_and_logs(tmp_path):
     assert len(rec["fills"]) == 1 and rec["fills"][0]["cost"] == pytest.approx(500)
     assert broker.positions()["BTC/USD"]["amount"] == pytest.approx(5)
     assert (tmp_path / "trades.csv").read_text().count("\n") == 2
-    assert bot.journal.recent_history()[0]["fills"]
+    assert bot.journal.recent_history(bot.clock())[0]["fills"]
 
 
 def test_cycle_stop_loss_runs_before_ai(tmp_path):
@@ -208,3 +208,24 @@ def test_cycle_survives_market_outage(tmp_path):
     rec = bot.run_cycle()
     assert any("ETH/USD" in e for e in rec["errors"])
     assert len(rec["fills"]) == 1
+
+
+def test_brain_records_cost_and_respects_budget(tmp_path):
+    from ai_trader.usage import Budget, UsageLedger
+
+    ledger = UsageLedger(tmp_path / "u.jsonl")
+    client, msgs = fake_client({"market_view": "", "decisions": []})
+    brain = ClaudeBrain("claude-opus-5-5", "high", client=client, ledger=ledger,
+                        budget=Budget(daily_usd=0.10, monthly_usd=0), source="paper")
+    out = brain.decide({"BTC/USD": {"price": 1}}, portfolio(), LIMITS, [])
+    assert out["usage"]["cost"] == pytest.approx((100 * 4 + 50 * 20) / 1e6)  # fake usage: 100 in, 50 out
+    assert len(msgs.calls) == 1
+    ledger.record("claude-opus-5-5", 25_000, 0, "paper")  # $0.10 more: today's spend is now over the cap
+    out = brain.decide({"BTC/USD": {"price": 1}}, portfolio(), LIMITS, [])
+    assert "daily Claude budget reached" in out["error"] and len(msgs.calls) == 1  # no API call made
+
+
+def test_haiku_skips_fallbacks():
+    client, msgs = fake_client({"market_view": "", "decisions": []})
+    ClaudeBrain("claude-haiku-5-5", "low", client=client).decide({"BTC/USD": {}}, portfolio(), LIMITS, [])
+    assert "fallbacks" not in msgs.calls[0] and "betas" not in msgs.calls[0]
